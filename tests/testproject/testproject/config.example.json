@@ -1,0 +1,9 @@
+{
+    "DJANGO_SECRET_KEY": "",
+    "KEYCLOAK_SERVER_URL": "http://127.0.0.1:8080",
+    "KEYCLOAK_REALM": "development",
+    "KEYCLOAK_CLIENT_ID": "testproject",
+    "KEYCLOAK_CLIENT_SECRET": "",
+    "KEYCLOAK_ADMIN_CLIENT_ID": "django-keycloak",
+    "KEYCLOAK_ADMIN_CLIENT_SECRET": ""
+}
