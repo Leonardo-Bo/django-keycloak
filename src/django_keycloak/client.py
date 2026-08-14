@@ -1,5 +1,7 @@
 from authlib.integrations.django_client import OAuth
-from authlib.jose import JsonWebKey, jwt
+from joserfc import jwt
+from joserfc.jwk import KeySet
+from joserfc.jwt import JWTClaimsRegistry
 from requests import get, post
 
 from .settings import get_keycloak_settings
@@ -75,30 +77,33 @@ def verify_logout_token(logout_token):
     response = get(certs_url)
     response.raise_for_status()
 
-    key_set = JsonWebKey.import_key_set(response.json())
+    key_set = KeySet.import_key_set(response.json())
 
-    claims = jwt.decode(
+    token = jwt.decode(
         logout_token,
         key_set,
-        claims_options={
-            "iss": {
-                "essential": True,
-                "value": f"{server}/realms/{realm}",
-            },
-            "aud": {
-                "essential": True,
-                "value": config["CLIENT_ID"],
-            },
-            "sub": {
-                "essential": True,
-            },
-            "events": {
-                "essential": True,
-            },
+    )
+
+    claims = token.claims
+
+    registry = JWTClaimsRegistry(
+        iss={
+            "essential": True,
+            "value": f"{server}/realms/{realm}",
+        },
+        aud={
+            "essential": True,
+            "value": config["CLIENT_ID"],
+        },
+        sub={
+            "essential": True,
+        },
+        events={
+            "essential": True,
         },
     )
 
-    claims.validate()
+    registry.validate(claims)
 
     events = claims["events"]
 
