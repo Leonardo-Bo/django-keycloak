@@ -1,3 +1,5 @@
+import logging
+
 from urllib.parse import urlencode
 
 from django.contrib.auth import login
@@ -17,6 +19,9 @@ from .services import (
     request_password_reset,
 )
 from .settings import get_keycloak_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 def login_view(request: HttpRequest) -> HttpResponse:
@@ -49,7 +54,10 @@ def callback_view(request: HttpRequest) -> HttpResponse:
 
     token = oauth.keycloak.authorize_access_token(request)
 
-    request.session["oidc_id_token"] = token["id_token"]
+    logger.info("Keycloak authentication completed.")
+
+    request.session["oidc_token"] = token
+    request.session["oidc_token_refreshed_at"] = timezone.now().timestamp()
 
     userinfo = token["userinfo"]
 

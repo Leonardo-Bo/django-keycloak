@@ -300,6 +300,8 @@ KEYCLOAK = {
     "SUPERUSER": "django-admin",
     "REGISTRATION_MODE": "pending",
 
+    "TOKEN_REFRESH_INTERVAL": 24 * 60 * 60,
+
     "ADMIN": {
         "CLIENT_ID": "django-keycloak",
         "CLIENT_SECRET": "<django-keycloak-client-secret>",
@@ -359,7 +361,106 @@ For the example project:
 
 The exact values depend on the application's registration policy.
 
-> Never commit real client secrets to source control. Store secrets in environment variables or another secure configuration mechanism in production.
+### Token refresh
+
+`TOKEN_REFRESH_INTERVAL` controls how often `django-keycloak` refreshes the
+Keycloak access token for an authenticated Django session.
+
+The value is expressed in seconds.
+
+For example:
+
+```python
+"TOKEN_REFRESH_INTERVAL": 24 * 60 * 60,
+```
+
+configures a token refresh interval of 24 hours.
+
+Token refresh is handled by `django-keycloak`. The application does not need
+to implement its own Keycloak token refresh mechanism.
+
+The refresh interval should be shorter than the Keycloak SSO session idle
+timeout.
+
+### Keycloak session timeout
+
+The Keycloak SSO session lifetime is configured separately in the Keycloak
+Administration Console.
+
+Open:
+
+**Realm settings → Sessions**
+
+Configure:
+
+**SSO Session Idle**
+
+This setting determines how long a Keycloak SSO session can remain inactive
+before Keycloak expires it.
+
+For example:
+
+```text
+SSO Session Idle: 7 days
+```
+
+The application should configure `TOKEN_REFRESH_INTERVAL` to a value shorter
+than this timeout.
+
+For example:
+
+```text
+SSO Session Idle        = 7 days
+TOKEN_REFRESH_INTERVAL  = 1 day
+```
+
+This allows `django-keycloak` to periodically refresh the Keycloak access
+token while the Keycloak SSO session remains valid.
+
+`TOKEN_REFRESH_INTERVAL` does not configure the Keycloak SSO session timeout.
+The SSO session timeout is always controlled by Keycloak.
+
+### Django session
+
+The Django session is separate from the Keycloak SSO session.
+
+The Django application can configure its session lifetime independently:
+
+```python
+SESSION_COOKIE_AGE = 7 * 24 * 60 * 60
+SESSION_SAVE_EVERY_REQUEST = False
+SESSION_REFRESH_INTERVAL = 24 * 60 * 60
+```
+
+`SESSION_COOKIE_AGE` defines the lifetime of the Django session cookie.
+
+`SESSION_SAVE_EVERY_REQUEST = False` prevents Django from saving the session
+to the database on every request.
+
+`SESSION_REFRESH_INTERVAL` is an application-level setting used by the
+application middleware to periodically update the activity information
+associated with the user's Django session.
+
+A typical configuration is therefore:
+
+```text
+Keycloak SSO Session Idle        = 7 days
+Django SESSION_COOKIE_AGE        = 7 days
+Django SESSION_REFRESH_INTERVAL  = 1 day
+Keycloak TOKEN_REFRESH_INTERVAL  = 1 day
+```
+
+These settings have different responsibilities:
+
+| Setting                    | Controls                                            |
+| -------------------------- | --------------------------------------------------- |
+| `SSO Session Idle`         | Keycloak SSO session inactivity timeout             |
+| `TOKEN_REFRESH_INTERVAL`   | Keycloak access-token refresh interval              |
+| `SESSION_COOKIE_AGE`       | Django session cookie lifetime                      |
+| `SESSION_REFRESH_INTERVAL` | Django application session activity update interval |
+
+Keycloak controls the Keycloak authentication session and token lifecycle.
+Django controls the local Django session.
 
 
 ## Configure URLs
@@ -492,13 +593,26 @@ configured OIDC callback.
 
 ### Logout
 
-The logout flow terminates the Keycloak session and the local Django session.
+The logout flow terminates both the Keycloak SSO session and the local Django
+session.
 
 ```text
 /api/oidc/logout/
 ```
 
-The Django Admin uses the same authentication mechanism.
+The logout is performed through Keycloak and then the corresponding Django
+session is invalidated.
+
+This is different from session expiration:
+
+* an explicit logout terminates the Keycloak SSO session and the Django session;
+* expiration of the Django session only invalidates the local Django session;
+* expiration of the Keycloak SSO session invalidates the Keycloak authentication
+  state, while the local Django session may remain valid until it expires or
+  is invalidated through backchannel logout.
+
+Backchannel logout can be used to synchronize the local Django session when
+Keycloak terminates the user's session.
 
 ### Password reset
 

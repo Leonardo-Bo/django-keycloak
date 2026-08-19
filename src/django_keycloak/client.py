@@ -57,6 +57,33 @@ def exchange_code(code, redirect_uri):
     return response.json()
 
 
+def refresh_token(refresh_token):
+    config = get_keycloak_settings()
+
+    server = config["SERVER_URL"].rstrip("/")
+    realm = config["REALM"]
+
+    response = post(
+        f"{server}/realms/{realm}"
+        "/protocol/openid-connect/token",
+        data={
+            "grant_type": "refresh_token",
+            "client_id": config["CLIENT_ID"],
+            "client_secret": config["CLIENT_SECRET"],
+            "refresh_token": refresh_token,
+        },
+        timeout=10,
+    )
+
+    if response.status_code != 200:
+        raise ValueError(
+            "Failed to refresh Keycloak token: "
+            f"{response.status_code} {response.text}"
+        )
+
+    return response.json()
+
+
 def verify_logout_token(logout_token):
     """
     Verify a Keycloak back-channel logout token.
