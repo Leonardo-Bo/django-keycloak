@@ -59,3 +59,13 @@ def get_superuser_username():
         "SUPERUSER",
         "django-admin",
     )
+
+
+def get_token_refresh_interval():
+    """
+    Return the token refresh interval in seconds.
+    """
+    return get_keycloak_settings().get(
+        "TOKEN_REFRESH_INTERVAL",
+        86400,
+    )
