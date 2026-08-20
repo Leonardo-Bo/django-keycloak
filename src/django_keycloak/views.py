@@ -27,6 +27,11 @@ logger = logging.getLogger(__name__)
 def login_view(request: HttpRequest) -> HttpResponse:
     oauth = configure_oauth()
 
+    next_url = request.GET.get("next")
+
+    if next_url:
+        request.session["oidc_next"] = next_url
+
     redirect_uri = request.build_absolute_uri(
         "/api/oidc/callback/"
     )
@@ -49,6 +54,8 @@ def admin_login_view(request: HttpRequest) -> HttpResponse:
 def callback_view(request: HttpRequest) -> HttpResponse:
     if request.GET.get("kc_action") == "UPDATE_PASSWORD":
         return password_change_callback_view(request)
+
+    request.session.pop("oidc_registration", None)
 
     oauth = configure_oauth()
 
@@ -284,3 +291,24 @@ def backchannel_logout_view(
             session.delete()
 
     return HttpResponse(status=200)
+
+
+def register_view(request: HttpRequest) -> HttpResponse:
+    oauth = configure_oauth()
+
+    request.session["oidc_registration"] = True
+
+    next_url = request.GET.get("next")
+
+    if next_url:
+        request.session["oidc_next"] = next_url
+
+    redirect_uri = request.build_absolute_uri(
+        "/api/oidc/callback/"
+    )
+
+    return oauth.keycloak.authorize_redirect(
+        request,
+        redirect_uri,
+        kc_action="REGISTER",
+    )
