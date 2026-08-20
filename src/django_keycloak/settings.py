@@ -20,25 +20,9 @@ def get_user_creation_mode():
     """
     return get_keycloak_settings().get(
         "USER_CREATION_MODE",
-        "disabled",
-    )
-
-
-def get_registration_mode():
-    """
-    Return the configured registration mode.
-
-    Supported values are:
-
-    - "pending": users registered by the application are created
-      as inactive Django users and require activation.
-    - "active": users registered by the application are created
-      as active Django users and can log in immediately.
-    """
-    return get_keycloak_settings().get(
-        "REGISTRATION_MODE",
         "pending",
     )
+
 
 
 def get_keycloak_admin_settings():

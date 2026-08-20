@@ -87,7 +87,7 @@ def callback_view(request: HttpRequest) -> HttpResponse:
 
     if not user.is_active:
         return HttpResponse(
-            "User account is inactive.",
+            "Your account is inactive. Please wait for an administrator to activate it.",
             status=403,
         )
 
