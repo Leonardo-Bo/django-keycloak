@@ -24,7 +24,6 @@ from django_keycloak.views import (
 
 from .views import (
     test_create_user,
-    test_register_user,
     test_password_reset,
 )
 
@@ -35,6 +34,5 @@ urlpatterns = [
     path("admin/", admin.site.urls),
     path("api/oidc/", include("django_keycloak.urls")),
     path("test-create-user/", test_create_user),
-    path("test-register-user/", test_register_user),
     path("test-password-reset/", test_password_reset),
 ]

@@ -1,12 +1,17 @@
+import logging
+
+from django.db import transaction
 from django.contrib.auth import get_user_model
 
-from .keycloak_admin import KeycloakAdminClient
+from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from .models import KeycloakIdentity
 from .settings import (
     get_keycloak_settings,
     get_superuser_username,
     get_user_creation_mode,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KeycloakUserError(Exception):
@@ -118,7 +123,9 @@ def create_user_with_temporary_password(
     Create an enabled Keycloak user with a temporary password
     and an active Django user.
 
-    This implements the administrative user-creation flow.
+    This implements the administrative user-creation flow. If the
+    Django side fails, the Keycloak user is removed so the
+    operation can be retried.
     """
 
     User = get_user_model()
@@ -132,17 +139,32 @@ def create_user_with_temporary_password(
         temporary_password=True,
     )
 
-    user = User.objects.create(
-        username=username,
-        email=email,
-        is_active=True,
-    )
+    try:
+        # The Django user and its identity are created together or not at all.
+        with transaction.atomic():
+            user = User.objects.create(
+                username=username,
+                email=email,
+                is_active=True,
+            )
 
-    KeycloakIdentity.objects.create(
-        user=user,
-        subject=subject,
-        realm=client.realm,
-    )
+            KeycloakIdentity.objects.create(
+                user=user,
+                subject=subject,
+                realm=client.realm,
+            )
+    except Exception:
+        # Do not leave an orphaned user behind in Keycloak.
+        try:
+            client.delete_user(subject)
+        except KeycloakAdminError:
+            logger.error(
+                "Could not remove orphaned Keycloak user %s.",
+                subject,
+                exc_info=True,
+            )
+
+        raise
 
     return user
 
