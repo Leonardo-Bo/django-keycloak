@@ -156,6 +156,7 @@ class KeycloakAdminClient:
         response = self.session.get(
             self._url("users"),
             params=params,
+            timeout=5,
         )
 
         if response.status_code != 200:
@@ -200,6 +201,7 @@ class KeycloakAdminClient:
             ),
             params=params,
             json=["UPDATE_PASSWORD"],
+            timeout=15,
         )
 
         if response.status_code != 204:

@@ -168,10 +168,18 @@ def password_reset_view(
             status=400,
         )
 
-    request_password_reset(
-        username=username or None,
-        email=email or None,
-    )
+    try:
+        request_password_reset(
+            username=username or None,
+            email=email or None,
+        )
+    except Exception as exc:
+        # Never reveal whether the account exists or whether sending failed.
+        logger.warning(
+            "Password reset request failed (%s: %s).",
+            type(exc).__name__,
+            exc,
+        )
 
     return HttpResponse(status=204)
 
