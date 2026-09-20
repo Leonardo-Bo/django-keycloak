@@ -36,6 +36,7 @@ class KeycloakAdminClient:
                 "/protocol/openid-connect/token"
             ),
             grant_type="client_credentials",
+            timeout=5,
         )
 
     def _url(self, path):
@@ -155,6 +156,7 @@ class KeycloakAdminClient:
         response = self.session.get(
             self._url("users"),
             params=params,
+            timeout=5,
         )
 
         if response.status_code != 200:
@@ -199,6 +201,7 @@ class KeycloakAdminClient:
             ),
             params=params,
             json=["UPDATE_PASSWORD"],
+            timeout=15,
         )
 
         if response.status_code != 204:
@@ -221,6 +224,7 @@ class KeycloakAdminClient:
     def logout_user(self, user_id):
         response = self.session.post(
             self._url(f"users/{user_id}/logout"),
+            timeout=5,
         )
 
         if response.status_code != 204:

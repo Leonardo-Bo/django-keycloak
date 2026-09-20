@@ -4,6 +4,7 @@ from .views import (
     backchannel_logout_view,
     callback_view,
     change_password_view,
+    register_view,
     login_view,
     logout_view,
     admin_logout_view,
@@ -13,6 +14,7 @@ from .views import (
 
 urlpatterns = [
     path("login/", login_view, name="keycloak-login"),
+    path("register/", register_view, name="keycloak-register"),
     path("callback/", callback_view, name="keycloak-callback"),
     path("logout/", logout_view, name="keycloak-logout"),
     path("admin-logout/", admin_logout_view, name="keycloak-admin-logout"),

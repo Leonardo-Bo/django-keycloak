@@ -1,13 +1,17 @@
+import logging
+
+from django.db import transaction
 from django.contrib.auth import get_user_model
 
-from .keycloak_admin import KeycloakAdminClient
+from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from .models import KeycloakIdentity
 from .settings import (
     get_keycloak_settings,
-    get_registration_mode,
     get_superuser_username,
     get_user_creation_mode,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class KeycloakUserError(Exception):
@@ -119,7 +123,9 @@ def create_user_with_temporary_password(
     Create an enabled Keycloak user with a temporary password
     and an active Django user.
 
-    This implements the administrative user-creation flow.
+    This implements the administrative user-creation flow. If the
+    Django side fails, the Keycloak user is removed so the
+    operation can be retried.
     """
 
     User = get_user_model()
@@ -133,94 +139,34 @@ def create_user_with_temporary_password(
         temporary_password=True,
     )
 
-    user = User.objects.create(
-        username=username,
-        email=email,
-        is_active=True,
-    )
-
-    KeycloakIdentity.objects.create(
-        user=user,
-        subject=subject,
-        realm=client.realm,
-    )
-
-    return user
-
-
-def register_user(
-    *,
-    username,
-    email,
-    password,
-):
-    """
-    Register a new user through the application.
-
-    The Keycloak account is enabled and the password is permanent.
-
-    The registration mode controls the Django user's active state:
-
-    - "pending": create the Django user as inactive.
-    - "active": create the Django user as active after the
-      Keycloak email verification flow has been completed.
-
-    For "active" registration, Keycloak requires the user to verify
-    their email address before authentication is allowed.
-
-    If Django user creation fails after the Keycloak user has been
-    created, the Keycloak user is deleted to avoid leaving an
-    orphaned Keycloak account.
-    """
-
-    User = get_user_model()
-    client = KeycloakAdminClient()
-
-    registration_mode = get_registration_mode()
-
-    if registration_mode not in {"pending", "active"}:
-        raise KeycloakUserError(
-            f"Invalid REGISTRATION_MODE: {registration_mode}"
-        )
-
-    required_actions = []
-
-    if registration_mode == "active":
-        required_actions.append("VERIFY_EMAIL")
-
-    subject = client.create_user(
-        username=username,
-        email=email,
-        password=password,
-        enabled=True,
-        temporary_password=False,
-        required_actions=required_actions,
-    )
-
     try:
-        if registration_mode == "active":
-            client.send_verify_email(
-                subject,
-                client_id=get_keycloak_settings()["CLIENT_ID"],
+        # The Django user and its identity are created together or not at all.
+        with transaction.atomic():
+            user = User.objects.create(
+                username=username,
+                email=email,
+                is_active=True,
             )
 
-        user = User.objects.create(
-            username=username,
-            email=email,
-            is_active=(registration_mode == "active"),
-        )
-
-        KeycloakIdentity.objects.create(
-            user=user,
-            subject=subject,
-            realm=client.realm,
-        )
-
-        return user
-
+            KeycloakIdentity.objects.create(
+                user=user,
+                subject=subject,
+                realm=client.realm,
+            )
     except Exception:
-        client.delete_user(subject)
+        # Do not leave an orphaned user behind in Keycloak.
+        try:
+            client.delete_user(subject)
+        except KeycloakAdminError:
+            logger.error(
+                "Could not remove orphaned Keycloak user %s.",
+                subject,
+                exc_info=True,
+            )
+
         raise
+
+    return user
 
 
 def request_password_reset(

@@ -101,7 +101,7 @@ def verify_logout_token(logout_token):
         "/protocol/openid-connect/certs"
     )
 
-    response = get(certs_url)
+    response = get(certs_url, timeout=10)
     response.raise_for_status()
 
     key_set = KeySet.import_key_set(response.json())

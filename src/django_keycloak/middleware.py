@@ -1,11 +1,48 @@
 from datetime import timedelta
 
 from django.contrib.auth import logout
+from django.shortcuts import redirect
+from django.urls import reverse
 from django.utils.deprecation import MiddlewareMixin
 from django.utils.timezone import now
 
 from .client import refresh_token
-from .settings import get_token_refresh_interval
+from .settings import (
+    get_keycloak_settings,
+    get_token_refresh_interval,
+)
+
+
+class KeycloakAuthenticationMiddleware(MiddlewareMixin):
+    """
+    Redirect unauthenticated requests to the Keycloak login flow.
+    """
+
+    def process_request(self, request):
+        if request.user.is_authenticated:
+            return
+
+        keycloak_paths = (
+            reverse("keycloak-login"),
+            reverse("keycloak-register"),
+            reverse("keycloak-callback"),
+            reverse("keycloak-logout"),
+            reverse("keycloak-admin-logout"),
+            reverse("keycloak-backchannel-logout"),
+            reverse("keycloak-password-reset"),
+            reverse("keycloak-change-password"),
+        )
+
+        if request.path.startswith(keycloak_paths):
+            return
+
+        login_url = reverse("keycloak-login")
+
+        next_url = request.get_full_path()
+
+        return redirect(
+            f"{login_url}?next={next_url}"
+        )
 
 
 class KeycloakTokenRefreshMiddleware(MiddlewareMixin):
