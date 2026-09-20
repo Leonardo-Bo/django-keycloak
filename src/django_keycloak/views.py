@@ -376,7 +376,21 @@ def backchannel_logout_view(
 
     try:
         claims = verify_logout_token(logout_token)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Invalid Keycloak logout token (%s: %s). "
+            "If valid tokens are being rejected, check SERVER_URL, "
+            "REALM and CLIENT_ID in the KEYCLOAK settings.",
+            type(exc).__name__,
+            exc,
+        )
+
+        # Full traceback, written only when the log level is DEBUG.
+        logger.debug(
+            "Logout token verification failed.",
+            exc_info=True,
+        )
+
         return HttpResponse(status=400)
 
     identity = (
