@@ -1,5 +1,8 @@
+import time
+
 from authlib.integrations.django_client import OAuth
 from joserfc import jwt
+from joserfc.errors import InvalidKeyIdError
 from joserfc.jwk import KeySet
 from joserfc.jwt import JWTClaimsRegistry
 from requests import get, post
@@ -8,6 +11,30 @@ from .settings import get_keycloak_settings
 
 
 oauth = OAuth()
+
+# Keycloak's signing keys, per certs URL: (KeySet, time fetched). Keys rarely change;
+# an unknown key forces a new fetch (see verify_logout_token).
+_KEY_SETS = {}
+KEY_SET_MAX_AGE = 3600
+
+
+def get_key_set(certs_url, refresh=False):
+    cached = _KEY_SETS.get(certs_url)
+
+    if (
+        cached
+        and not refresh
+        and time.monotonic() - cached[1] < KEY_SET_MAX_AGE
+    ):
+        return cached[0]
+
+    response = get(certs_url, timeout=10)
+    response.raise_for_status()
+
+    key_set = KeySet.import_key_set(response.json())
+    _KEY_SETS[certs_url] = (key_set, time.monotonic())
+
+    return key_set
 
 
 def configure_oauth():
@@ -101,15 +128,17 @@ def verify_logout_token(logout_token):
         "/protocol/openid-connect/certs"
     )
 
-    response = get(certs_url, timeout=10)
-    response.raise_for_status()
-
-    key_set = KeySet.import_key_set(response.json())
-
-    token = jwt.decode(
-        logout_token,
-        key_set,
-    )
+    try:
+        token = jwt.decode(
+            logout_token,
+            get_key_set(certs_url),
+        )
+    except InvalidKeyIdError:
+        # A key Keycloak rotated in after the cache was filled: fetch the keys once more.
+        token = jwt.decode(
+            logout_token,
+            get_key_set(certs_url, refresh=True),
+        )
 
     claims = token.claims
 
@@ -139,5 +168,10 @@ def verify_logout_token(logout_token):
         not in events
     ):
         raise ValueError("Invalid Keycloak logout token.")
+
+    # OpenID Connect Back-Channel Logout 1.0, section 2.6: a logout token must not
+    # contain a nonce, so an ID token can never be replayed as a logout token.
+    if "nonce" in claims:
+        raise ValueError("Invalid Keycloak logout token: nonce present.")
 
     return claims

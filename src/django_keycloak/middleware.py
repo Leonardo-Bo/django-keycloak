@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 
 from django.contrib.auth import logout
@@ -5,12 +6,16 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils.deprecation import MiddlewareMixin
 from django.utils.timezone import now
+from requests import RequestException
 
 from .client import refresh_token
 from .settings import (
     get_keycloak_settings,
     get_token_refresh_interval,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class KeycloakAuthenticationMiddleware(MiddlewareMixin):
@@ -92,7 +97,12 @@ class KeycloakTokenRefreshMiddleware(MiddlewareMixin):
 
         try:
             new_token = refresh_token(refresh)
-        except Exception:
+        except (ValueError, RequestException):
+            # Expired or revoked refresh token, or Keycloak unreachable: the user logs in again.
+            logger.info(
+                "Keycloak token refresh failed; the user is logged out.",
+                exc_info=True,
+            )
             logout(request)
             return
 

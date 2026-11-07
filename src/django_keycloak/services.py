@@ -1,6 +1,6 @@
 import logging
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.contrib.auth import get_user_model
 
 from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
@@ -55,8 +55,6 @@ def get_or_create_django_user(userinfo):
     if identity:
         return identity.user
 
-    User = get_user_model()
-
     username = (
         userinfo.get("preferred_username")
         or userinfo.get("email")
@@ -70,21 +68,15 @@ def get_or_create_django_user(userinfo):
     superuser_username = get_superuser_username()
 
     if superuser_username == username:
-        user = User.objects.create(
+        return _create_user_and_identity(
+            subject,
+            realm,
             username=username,
             email=userinfo.get("email", ""),
             is_active=True,
             is_staff=True,
             is_superuser=True,
         )
-
-        KeycloakIdentity.objects.create(
-            user=user,
-            subject=subject,
-            realm=realm,
-        )
-
-        return user
 
     mode = get_user_creation_mode()
 
@@ -98,17 +90,43 @@ def get_or_create_django_user(userinfo):
             f"Invalid USER_CREATION_MODE: {mode}"
         )
 
-    user = User.objects.create(
+    return _create_user_and_identity(
+        subject,
+        realm,
         username=username,
         email=userinfo.get("email", ""),
         is_active=(mode == "active"),
     )
 
-    KeycloakIdentity.objects.create(
-        user=user,
-        subject=subject,
-        realm=realm,
-    )
+
+def _create_user_and_identity(subject, realm, **user_fields):
+    """
+    Create a Django user and its Keycloak identity together, or neither.
+
+    A Django user with the same username that is not linked to this identity is never
+    taken over: the login is refused instead.
+    """
+    try:
+        with transaction.atomic():
+            user = get_user_model().objects.create(**user_fields)
+
+            KeycloakIdentity.objects.create(
+                user=user,
+                subject=subject,
+                realm=realm,
+            )
+    except IntegrityError as exc:
+        logger.warning(
+            "Keycloak identity %s:%s not linked: user %r already exists.",
+            realm,
+            subject,
+            user_fields.get("username"),
+        )
+
+        raise KeycloakUserError(
+            "An account with this username already exists and is not linked "
+            "to this login. Please contact an administrator."
+        ) from exc
 
     return user
 
