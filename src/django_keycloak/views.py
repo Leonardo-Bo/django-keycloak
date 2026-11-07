@@ -1,6 +1,8 @@
 import logging
 
 from urllib.parse import urlencode
+
+from authlib.integrations.base_client.errors import OAuthError
 from requests import RequestException, Timeout
 
 from django.contrib.auth import login
@@ -14,7 +16,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from .client import configure_oauth, verify_logout_token
 from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
-from .models import KeycloakIdentity
+from .models import KeycloakIdentity, KeycloakSession
 from .services import (
     KeycloakUserError,
     get_or_create_django_user,
@@ -102,29 +104,44 @@ def callback_view(request: HttpRequest) -> HttpResponse:
 
     oauth = configure_oauth()
 
-    token = oauth.keycloak.authorize_access_token(request)
+    try:
+        token = oauth.keycloak.authorize_access_token(request)
+    except OAuthError as exc:
+        # The user cancelled on Keycloak (access_denied), the state did not match
+        # (expired or replayed login), or Keycloak refused the code.
+        logger.warning(
+            "Keycloak login failed (%s: %s).",
+            exc.error,
+            exc.description,
+        )
+
+        return HttpResponse(
+            "Login was not completed. Please try again.",
+            status=400,
+        )
+    except RequestException:
+        logger.warning(
+            "Keycloak could not be reached during login.",
+            exc_info=True,
+        )
+
+        return HttpResponse(
+            "The login service is unavailable. Please retry.",
+            status=503,
+        )
 
     logger.info("Keycloak authentication completed.")
 
-    request.session["oidc_token"] = token
-    request.session["oidc_token_refreshed_at"] = (
-        timezone.now().timestamp()
-    )
-
     userinfo = token["userinfo"]
-
-    realm_access = token.get("realm_access", {})
-    userinfo["roles"] = realm_access.get("roles", [])
 
     try:
         user = get_or_create_django_user(userinfo)
     except KeycloakUserError as exc:
         return HttpResponse(str(exc), status=403)
 
-    if (
-        not user.is_superuser
-        and not userinfo.get("email_verified", False)
-    ):
+    # Required for everyone, superuser included: otherwise whoever registers first with
+    # the SUPERUSER username, without verifying an email, would become a Django superuser.
+    if not userinfo.get("email_verified", False):
         return HttpResponse(
             "Email address is not verified.",
             status=403,
@@ -137,11 +154,26 @@ def callback_view(request: HttpRequest) -> HttpResponse:
             status=403,
         )
 
-    login(request, user)
-
     next_url = request.session.pop(
         "oidc_next",
         "/",
+    )
+
+    login(request, user)
+
+    request.session["oidc_token"] = token
+    request.session["oidc_token_refreshed_at"] = (
+        timezone.now().timestamp()
+    )
+
+    # login() gives the session a new key, so the session is saved now to record the
+    # key that back-channel logout will have to delete.
+    request.session.save()
+
+    KeycloakSession.objects.create(
+        identity=user.keycloak_identity,
+        session_key=request.session.session_key,
+        sid=userinfo.get("sid", ""),
     )
 
     return redirect(next_url)
@@ -285,7 +317,7 @@ def password_change_callback_view(
         client = KeycloakAdminClient()
         client.logout_user(identity.subject)
 
-    request.session.flush()
+    forget_session(request)
 
     return redirect("/api/oidc/login/")
 
@@ -335,7 +367,7 @@ def logout_view(request: HttpRequest) -> HttpResponse:
                     status=503,
                 )
 
-    request.session.flush()
+    forget_session(request)
 
     return HttpResponse(status=204)
 
@@ -355,10 +387,23 @@ def admin_logout_view(request: HttpRequest) -> HttpResponse:
         )
 
         if identity:
-            client = KeycloakAdminClient()
-            client.logout_user(identity.subject)
+            try:
+                client = KeycloakAdminClient()
+                client.logout_user(identity.subject)
+            except (RequestException, KeycloakAdminError):
+                # Same rule as logout_view: keep the Django session, so the user is not
+                # left logged out of Django but still logged in to Keycloak.
+                logger.warning(
+                    "Keycloak admin logout failed.",
+                    exc_info=True,
+                )
 
-    request.session.flush()
+                return HttpResponse(
+                    "The login service is unavailable. Please retry.",
+                    status=503,
+                )
+
+    forget_session(request)
 
     return redirect("/admin/login/")
 
@@ -413,6 +458,45 @@ def backchannel_logout_view(
     if not identity:
         return HttpResponse(status=200)
 
+    end_sessions(identity, sid=claims.get("sid"))
+
+    return HttpResponse(status=200)
+
+
+def forget_session(request: HttpRequest) -> None:
+    """Flush the Django session and drop its back-channel logout record."""
+    if request.session.session_key:
+        KeycloakSession.objects.filter(
+            session_key=request.session.session_key,
+        ).delete()
+
+    request.session.flush()
+
+
+def end_sessions(identity: KeycloakIdentity, sid: str | None = None) -> None:
+    """
+    Delete the Django sessions of a Keycloak identity.
+
+    With a Keycloak session id (``sid``) only the Django sessions opened in that Keycloak
+    session are deleted; without it, all the sessions of the identity.
+    """
+    records = KeycloakSession.objects.filter(identity=identity)
+
+    if sid:
+        records = records.filter(sid=sid)
+
+    session_keys = list(records.values_list("session_key", flat=True))
+
+    if session_keys:
+        Session.objects.filter(session_key__in=session_keys).delete()
+        records.delete()
+        return
+
+    if KeycloakSession.objects.filter(identity=identity).exists():
+        return
+
+    # Sessions opened before version 0.4.0 have no record: fall back to scanning the
+    # active sessions, as earlier versions did. Can be removed once they have expired.
     sessions = Session.objects.filter(
         expire_date__gte=timezone.now(),
     )
@@ -422,8 +506,6 @@ def backchannel_logout_view(
 
         if data.get("_auth_user_id") == str(identity.user_id):
             session.delete()
-
-    return HttpResponse(status=200)
 
 
 def register_view(request: HttpRequest) -> HttpResponse:

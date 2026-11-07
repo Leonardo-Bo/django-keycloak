@@ -137,7 +137,7 @@ Keep both client secrets private. They are different and must not be exchanged.
 
 Three realm settings affect how `django-keycloak` behaves.
 
-**Verify email** (Realm settings → Login). A user can log in only if Keycloak reports the email address as verified (the superuser is the only exception). Users created with `create_user_with_temporary_password` start with an unverified email, so enable **Verify email**: Keycloak then asks them to verify it at their first login. Otherwise the login is rejected with `403 Email address is not verified.`
+**Verify email** (Realm settings → Login). A user can log in only if Keycloak reports the email address as verified, the superuser included. Users created with `create_user_with_temporary_password` start with an unverified email, so enable **Verify email**: Keycloak then asks them to verify it at their first login. Otherwise the login is rejected with `403 Email address is not verified.`
 
 **SSO Session Idle** and **SSO Session Max** (Realm settings → Sessions). They decide how long a Keycloak session lives, and therefore how long token refresh can succeed. See [Sessions and token refresh](#sessions-and-token-refresh).
 
@@ -152,7 +152,7 @@ Password reset and other email-based flows need SMTP to be configured in the Key
 
 ### Installed apps
 
-Add `django_keycloak` to `INSTALLED_APPS`, then create its table:
+Add `django_keycloak` to `INSTALLED_APPS`, then create its tables:
 
 ```python
 INSTALLED_APPS = [
@@ -261,7 +261,7 @@ urlpatterns = [
 ]
 ```
 
-`admin_login_view` starts the Keycloak login and returns to `/admin/`. `admin_logout_view` ends the user's Keycloak sessions, flushes the Django session and redirects to `/admin/login/`. Unlike `/api/oidc/logout/`, it does not handle a Keycloak failure: if Keycloak cannot be reached, the request fails with a server error and the session is kept.
+`admin_login_view` starts the Keycloak login and returns to `/admin/`. `admin_logout_view` ends the user's Keycloak sessions, flushes the Django session and redirects to `/admin/login/`. As with `/api/oidc/logout/`, if Keycloak cannot be reached it answers `503` and keeps the session, so the user can retry.
 
 Keycloak is responsible for authentication. The Django Admin remains responsible for authorization: staff status, superuser status, groups and permissions.
 
@@ -282,15 +282,17 @@ If no identity exists, the outcome depends on `USER_CREATION_MODE`:
 | `pending` | A Django user is created as inactive and linked to the identity. The login is refused with `403` until an administrator activates the user. |
 | `active` | A Django user is created as active and linked to the identity. |
 
-After the user is resolved, the login is refused with `403` if the email is not verified (superuser excepted) or if the Django user is inactive. Otherwise the user is logged in to Django.
+After the user is resolved, the login is refused with `403` if the email is not verified or if the Django user is inactive. Otherwise the user is logged in to Django.
+
+A Django user that already has the same username but is not linked to this identity is never taken over: the login is refused with `403` and the case is logged.
 
 Only the username (Keycloak's `preferred_username`, or the email if missing) and the email are copied to Django, and only when the user is created. Later changes in Keycloak are not synchronized.
 
 ### Superuser
 
-The Keycloak user whose username equals `KEYCLOAK["SUPERUSER"]` is provisioned automatically at first login as an active Django superuser (`is_staff` and `is_superuser`), linked to its Keycloak identity, and exempt from the verified-email check.
+The Keycloak user whose username equals `KEYCLOAK["SUPERUSER"]` is provisioned automatically at first login as an active Django superuser (`is_staff` and `is_superuser`), linked to its Keycloak identity. Like every user, it needs a verified email.
 
-1. Create in Keycloak a user with that username (`django-admin` by default).
+1. Create in Keycloak a user with that username (`django-admin` by default), with an email, and mark the email as verified (or verify it at the first login).
 2. Log in with it. The Django user is created on the fly.
 
 Do not create the Django user beforehand: a Django user with the same username and no identity makes the first login fail. Because the superuser is identified by username, create this Keycloak user before allowing anyone else to register in the realm.
@@ -365,6 +367,17 @@ Explicit logout and back-channel logout close sessions immediately, independentl
 
 `/api/oidc/login/` redirects to Keycloak. An optional `next` parameter (`/api/oidc/login/?next=/patients/`) is used as the post-login destination, but only if it points to the same host.
 
+When Keycloak sends the user back to `/api/oidc/callback/`:
+
+| Result | Response |
+| --- | --- |
+| Login completed | Redirect to `next`, or `/` |
+| User cancelled on Keycloak, expired or replayed login (state mismatch), code refused | `400` |
+| Keycloak unreachable while exchanging the code | `503` |
+| No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403` |
+
+Failures are logged at `WARNING` level with the reason.
+
 ### Logout
 
 `/api/oidc/logout/` ends the user's sessions in Keycloak through the Admin API, then flushes the Django session. Keycloak ends every session of that user in the realm, on all devices.
@@ -389,7 +402,11 @@ The endpoint is not CSRF-exempt, so send the CSRF token as for any Django POST. 
 
 ### Back-channel logout
 
-Keycloak sends a signed logout token. `django-keycloak` verifies its signature with the realm's keys, its issuer (`SERVER_URL/realms/REALM`), its audience (`CLIENT_ID`) and the logout event, then deletes every Django session of the user. It answers `200` when the notification is handled (including when no Django user matches) and `400` when the token is invalid. Rejected tokens are logged at `WARNING` level with the reason.
+Keycloak sends a signed logout token. `django-keycloak` verifies its signature with the realm's keys, its issuer (`SERVER_URL/realms/REALM`), its audience (`CLIENT_ID`), its expiry, the logout event and the absence of a `nonce`, then deletes the user's Django sessions. It answers `200` when the notification is handled (including when no Django user matches) and `400` when the token is invalid. Rejected tokens are logged at `WARNING` level with the reason.
+
+Every login records which Django session belongs to which Keycloak session (`KeycloakSession`), so only those sessions are deleted: with a session id (`sid`) in the token, only the Django sessions opened in that Keycloak session; without it, all the sessions of the user. Sessions opened before version 0.4.0 have no record; for them the whole session table is scanned, as earlier versions did.
+
+The realm's signing keys are cached for an hour in each process and fetched again when a token is signed with a key not in the cache (key rotation).
 
 
 ## Single-page applications

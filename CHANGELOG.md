@@ -1,5 +1,21 @@
 ## Changelog
 
+### 0.4.0
+
+Upgrade: run `python manage.py migrate` (new table `django_keycloak_keycloaksession`).
+
+- **Breaking:** the superuser needs a verified email, like every user. Before, whoever registered first with the `SUPERUSER` username could become a Django superuser without verifying an email. Mark the email of that Keycloak user as verified.
+- The login callback no longer fails with a server error: a cancelled, expired or replayed login answers `400`, an unreachable Keycloak `503`. Failures are logged.
+- A Django user with the same username but no Keycloak identity is no longer an `IntegrityError`: the login is refused with `403` and logged.
+- The OIDC tokens are stored in the session only after the user has been accepted.
+- Back-channel logout deletes only the sessions of the user (or of the Keycloak session `sid`) through the new `KeycloakSession` records, instead of decoding every active session. Sessions opened before 0.4.0 are still found by the old scan.
+- Back-channel logout tokens containing a `nonce` are rejected (OpenID Connect Back-Channel Logout 1.0, 2.6).
+- The realm's signing keys are cached for an hour and fetched again on key rotation.
+- `/api/oidc/admin-logout/` answers `503` and keeps the session when Keycloak cannot be reached, like `/api/oidc/logout/`.
+- A failed token refresh is logged before the user is logged out.
+- Removed the unused `userinfo["roles"]`.
+- Tests for login, logout and back-channel logout.
+
 ### 0.3.0
 
 - **Breaking:** `/api/oidc/logout/` now returns `204 No Content` on success instead of redirecting to the login. The client is responsible for navigating to the login page.
