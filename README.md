@@ -367,6 +367,8 @@ Explicit logout and back-channel logout close sessions immediately, independentl
 
 `/api/oidc/login/` redirects to Keycloak. An optional `next` parameter (`/api/oidc/login/?next=/patients/`) is used as the post-login destination, but only if it points to the same host.
 
+If Keycloak cannot be reached, or the realm does not exist, it answers `503` instead of redirecting.
+
 When Keycloak sends the user back to `/api/oidc/callback/`:
 
 | Result | Response |

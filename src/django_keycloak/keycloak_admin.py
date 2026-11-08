@@ -79,6 +79,7 @@ class KeycloakAdminClient:
                     }
                 ],
             },
+            timeout=10,
         )
 
         if response.status_code != 201:
@@ -119,6 +120,8 @@ class KeycloakAdminClient:
                 f"users/{user_id}/send-verify-email"
             ),
             params=params,
+            # Keycloak sends the email before answering.
+            timeout=15,
         )
 
         if response.status_code != 204:
@@ -213,6 +216,7 @@ class KeycloakAdminClient:
     def delete_user(self, user_id):
         response = self.session.delete(
             self._url(f"users/{user_id}"),
+            timeout=5,
         )
 
         if response.status_code != 204:

@@ -1,7 +1,7 @@
 # Roadmap
 
 What is left before 1.0.0, the release that freezes the public behaviour.
-Written 2026-11-08, after 0.4.0.
+Written 2026-11-08, after 0.4.0; updated after 0.4.1.
 
 ## Before 1.0.0
 
@@ -27,7 +27,8 @@ Written 2026-11-08, after 0.4.0.
 ## Checks not yet done against a real Keycloak
 
 - Keycloak stopped or not answering during login, logout and admin logout (covered by unit
-  tests only; see "Simulating a slow Keycloak" in the README).
+  tests only; see "Simulating a slow Keycloak" in the README). A missing realm at login was
+  checked against a real Keycloak in 0.4.1 (`503`).
 - Two Keycloak sessions of the same user and back-channel logout with `sid` ending only one.
 
 ## Upgrading applications

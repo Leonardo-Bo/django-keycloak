@@ -108,3 +108,25 @@ class SuperuserTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("_auth_user_id", self.client.session)
+
+
+@patch("django_keycloak.views.configure_oauth")
+class UnreachableKeycloakTests(TestCase):
+
+    def test_login_is_a_503_when_keycloak_cannot_be_reached(self, configure_oauth):
+        configure_oauth.return_value.keycloak.authorize_redirect.side_effect = (
+            RequestsConnectionError()
+        )
+
+        response = self.client.get(reverse("keycloak-login"))
+
+        self.assertEqual(response.status_code, 503)
+
+    def test_registration_is_a_503_when_keycloak_cannot_be_reached(self, configure_oauth):
+        configure_oauth.return_value.keycloak.authorize_redirect.side_effect = (
+            RequestsConnectionError()
+        )
+
+        response = self.client.get(reverse("keycloak-register"))
+
+        self.assertEqual(response.status_code, 503)
