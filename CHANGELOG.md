@@ -1,5 +1,11 @@
 ## Changelog
 
+### 0.4.1
+
+- `/api/oidc/login/` (and the admin login and registration) answers `503` instead of a server error when Keycloak cannot be reached or the realm does not exist. Logged at `WARNING`.
+- Timeouts on every Keycloak Admin API call: user creation (10 s), verification email (15 s), user deletion (5 s) had none, so a Keycloak that hung kept the request waiting forever.
+- Tests for both.
+
 ### 0.4.0
 
 Upgrade: run `python manage.py migrate` (new table `django_keycloak_keycloaksession`).

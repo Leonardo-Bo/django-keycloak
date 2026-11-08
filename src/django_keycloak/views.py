@@ -69,10 +69,13 @@ def login_view(request: HttpRequest) -> HttpResponse:
         "/api/oidc/callback/"
     )
 
-    return oauth.keycloak.authorize_redirect(
-        request,
-        redirect_uri,
-    )
+    try:
+        return oauth.keycloak.authorize_redirect(
+            request,
+            redirect_uri,
+        )
+    except RequestException:
+        return keycloak_unreachable("login")
 
 
 def admin_login_view(request: HttpRequest) -> HttpResponse:
@@ -529,8 +532,28 @@ def register_view(request: HttpRequest) -> HttpResponse:
         "/api/oidc/callback/"
     )
 
-    return oauth.keycloak.authorize_redirect(
-        request,
-        redirect_uri,
-        kc_action="REGISTER",
+    try:
+        return oauth.keycloak.authorize_redirect(
+            request,
+            redirect_uri,
+            kc_action="REGISTER",
+        )
+    except RequestException:
+        return keycloak_unreachable("registration")
+
+
+def keycloak_unreachable(step: str) -> HttpResponse:
+    """
+    Keycloak could not be reached (or its realm metadata could not be read) before the
+    redirect: answer 503 instead of a server error.
+    """
+    logger.warning(
+        "Keycloak could not be reached to start the %s.",
+        step,
+        exc_info=True,
+    )
+
+    return HttpResponse(
+        "The login service is unavailable. Please retry.",
+        status=503,
     )
