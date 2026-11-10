@@ -24,7 +24,7 @@ class CreateUserWithTemporaryPasswordTests(TestCase):
 
         self.assertTrue(user.is_active)
         self.assertEqual(
-            user.keycloak_identity.subject,
+            user.keycloak_identities.get().subject,
             "keycloak-subject",
         )
         client.delete_user.assert_not_called()

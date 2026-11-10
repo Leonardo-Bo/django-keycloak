@@ -1,14 +1,33 @@
+import logging
+
 from django.contrib import admin, messages
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
+from requests import RequestException
 
 from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from .models import KeycloakIdentity
+from .settings import resolve_realm
+
+
+logger = logging.getLogger(__name__)
 
 
 @admin.action(description="Send password reset email")
 def send_password_reset_email(modeladmin, request, queryset):
-    client = KeycloakAdminClient()
+    """Send the reset email of each user's account in the request's realm."""
+    realm = resolve_realm(request)
+
+    if realm is None:
+        messages.error(request, "This site belongs to no Keycloak realm.")
+        return
+
+    try:
+        client = KeycloakAdminClient(realm.name)
+    except (RequestException, KeycloakAdminError) as exc:
+        logger.warning("Keycloak Admin API unavailable (%s: %s).", type(exc).__name__, exc)
+        messages.error(request, "The login service is unavailable. Please retry.")
+        return
 
     sent = 0
 
@@ -17,7 +36,7 @@ def send_password_reset_email(modeladmin, request, queryset):
             KeycloakIdentity.objects
             .filter(
                 user=user,
-                realm=client.realm,
+                realm=realm.name,
             )
             .first()
         )
@@ -25,18 +44,25 @@ def send_password_reset_email(modeladmin, request, queryset):
         if not identity:
             messages.error(
                 request,
-                f"{user.username}: no Keycloak identity found.",
+                f"{user.username}: no Keycloak identity in realm {realm.name}.",
             )
             continue
 
         try:
             client.send_password_reset_email(
                 identity.subject,
+                client_id=realm.client_id,
             )
-        except KeycloakAdminError as exc:
+        except (RequestException, KeycloakAdminError) as exc:
+            logger.warning(
+                "Password reset email for %s failed (%s: %s).",
+                user.username,
+                type(exc).__name__,
+                exc,
+            )
             messages.error(
                 request,
-                f"{user.username}: {exc}",
+                f"{user.username}: the email could not be sent.",
             )
             continue
 

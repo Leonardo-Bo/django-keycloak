@@ -1,9 +1,7 @@
+from authlib.integrations.base_client.errors import OAuthError
 from authlib.integrations.requests_client import OAuth2Session
 
-from .settings import (
-    get_keycloak_admin_settings,
-    get_keycloak_settings,
-)
+from .settings import get_realm
 
 
 class KeycloakAdminError(Exception):
@@ -12,32 +10,37 @@ class KeycloakAdminError(Exception):
 
 class KeycloakAdminClient:
     """
-    Client for the Keycloak Admin REST API.
+    Client for the Keycloak Admin REST API of one realm.
+
+    ``realm`` is a realm name; it can be omitted when a single realm is configured.
     """
 
-    def __init__(self):
-        keycloak = get_keycloak_settings()
-        admin = get_keycloak_admin_settings()
+    def __init__(self, realm=None):
+        config = get_realm(realm)
 
-        self.server = keycloak["SERVER_URL"].rstrip("/")
-        self.realm = keycloak["REALM"]
+        self.config = config
+        self.server = config.server_url
+        self.realm = config.name
 
-        self.client_id = admin["CLIENT_ID"]
-        self.client_secret = admin["CLIENT_SECRET"]
+        self.client_id = config.admin_client_id
+        self.client_secret = config.admin_client_secret
 
         self.session = OAuth2Session(
             client_id=self.client_id,
             client_secret=self.client_secret,
         )
 
-        self.session.fetch_token(
-            url=(
-                f"{self.server}/realms/{self.realm}"
-                "/protocol/openid-connect/token"
-            ),
-            grant_type="client_credentials",
-            timeout=5,
-        )
+        try:
+            self.session.fetch_token(
+                url=config.token_url,
+                grant_type="client_credentials",
+                timeout=5,
+            )
+        except OAuthError as exc:
+            # Wrong admin client id or secret, or the client has no service account.
+            raise KeycloakAdminError(
+                f"Keycloak refused the admin client of realm {self.realm}: {exc}"
+            ) from exc
 
     def _url(self, path):
         return (

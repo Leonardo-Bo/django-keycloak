@@ -9,10 +9,10 @@ class KeycloakIdentity(models.Model):
     A Django user can have one Keycloak identity per Keycloak realm.
     """
 
-    user = models.OneToOneField(
+    user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name="keycloak_identity",
+        related_name="keycloak_identities",
     )
 
     subject = models.CharField(
@@ -36,6 +36,10 @@ class KeycloakIdentity(models.Model):
             models.UniqueConstraint(
                 fields=["subject", "realm"],
                 name="unique_keycloak_identity",
+            ),
+            models.UniqueConstraint(
+                fields=["user", "realm"],
+                name="unique_keycloak_identity_per_realm",
             ),
         ]
 

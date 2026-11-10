@@ -2,14 +2,12 @@ import logging
 
 from django.db import IntegrityError, transaction
 from django.contrib.auth import get_user_model
+from joserfc.errors import JoseError
 
+from .client import get_realm_roles
 from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from .models import KeycloakIdentity
-from .settings import (
-    get_keycloak_settings,
-    get_superuser_username,
-    get_user_creation_mode,
-)
+from .settings import get_realm
 
 logger = logging.getLogger(__name__)
 
@@ -20,33 +18,30 @@ class KeycloakUserError(Exception):
     """
 
 
-def get_or_create_django_user(userinfo):
+def get_or_create_django_user(userinfo, *, realm, access_token=None):
     """
-    Resolve a Keycloak identity to a Django user.
+    Resolve a Keycloak identity of ``realm`` to a Django user.
 
     Existing Keycloak identities are always mapped to their existing
     Django user.
 
-    When no identity exists, a new Django user is created according
-    to KEYCLOAK['USER_CREATION_MODE']:
+    When no identity exists:
 
-    - "disabled": automatic Django user creation is disabled.
-    - "pending": create the user with is_active=False.
-    - "active": create the user with is_active=True.
-
-    The "disabled" mode is a package-level option and is not one of
-    the application's user registration flows.
+    - a user holding the realm role SUPERUSER_ROLE in the access token is created as an
+      active Django superuser;
+    - otherwise a Django user is created according to USER_CREATION_MODE:
+      "disabled" creates nothing, "pending" creates the user with is_active=False,
+      "active" with is_active=True.
     """
 
-    config = get_keycloak_settings()
-    realm = config["REALM"]
+    realm = get_realm(realm)
     subject = userinfo["sub"]
 
     identity = (
         KeycloakIdentity.objects
         .select_related("user")
         .filter(
-            realm=realm,
+            realm=realm.name,
             subject=subject,
         )
         .first()
@@ -65,34 +60,43 @@ def get_or_create_django_user(userinfo):
             "Keycloak did not provide a username or email."
         )
 
-    superuser_username = get_superuser_username()
+    if realm.superuser_role and access_token:
+        try:
+            roles = get_realm_roles(access_token, realm)
+        except (JoseError, ValueError) as exc:
+            logger.warning(
+                "Keycloak access token of %s:%s rejected (%s: %s).",
+                realm.name,
+                subject,
+                type(exc).__name__,
+                exc,
+            )
 
-    if superuser_username == username:
-        return _create_user_and_identity(
-            subject,
-            realm,
-            username=username,
-            email=userinfo.get("email", ""),
-            is_active=True,
-            is_staff=True,
-            is_superuser=True,
-        )
+            raise KeycloakUserError(
+                "The login could not be verified. Please try again."
+            ) from exc
 
-    mode = get_user_creation_mode()
+        if realm.superuser_role in roles:
+            return _create_user_and_identity(
+                subject,
+                realm.name,
+                username=username,
+                email=userinfo.get("email", ""),
+                is_active=True,
+                is_staff=True,
+                is_superuser=True,
+            )
+
+    mode = realm.user_creation_mode
 
     if mode == "disabled":
         raise KeycloakUserError(
             "No Django user is associated with this Keycloak identity."
         )
 
-    if mode not in {"pending", "active"}:
-        raise KeycloakUserError(
-            f"Invalid USER_CREATION_MODE: {mode}"
-        )
-
     return _create_user_and_identity(
         subject,
-        realm,
+        realm.name,
         username=username,
         email=userinfo.get("email", ""),
         is_active=(mode == "active"),
@@ -136,10 +140,16 @@ def create_user_with_temporary_password(
     username,
     email,
     password,
+    realm=None,
+    user=None,
 ):
     """
-    Create an enabled Keycloak user with a temporary password
-    and an active Django user.
+    Create an enabled Keycloak user with a temporary password in ``realm``
+    and link it to a Django user.
+
+    Without ``user``, an active Django user is created with the same username and email.
+    With ``user``, the new Keycloak account is linked to that existing Django user, for a
+    person who already has an account in another realm.
 
     This implements the administrative user-creation flow. If the
     Django side fails, the Keycloak user is removed so the
@@ -147,7 +157,7 @@ def create_user_with_temporary_password(
     """
 
     User = get_user_model()
-    client = KeycloakAdminClient()
+    client = KeycloakAdminClient(realm)
 
     subject = client.create_user(
         username=username,
@@ -160,11 +170,12 @@ def create_user_with_temporary_password(
     try:
         # The Django user and its identity are created together or not at all.
         with transaction.atomic():
-            user = User.objects.create(
-                username=username,
-                email=email,
-                is_active=True,
-            )
+            if user is None:
+                user = User.objects.create(
+                    username=username,
+                    email=email,
+                    is_active=True,
+                )
 
             KeycloakIdentity.objects.create(
                 user=user,
@@ -187,19 +198,98 @@ def create_user_with_temporary_password(
     return user
 
 
+def link_existing_account(user, *, email, realm=None):
+    """
+    Link the Keycloak account of ``realm`` with this email to an existing Django user.
+
+    Call it only when the application has established that the person owns the email
+    (for example, an invitation accepted from the invited address). The account is
+    linked only if Keycloak reports its email as verified.
+
+    Returns the identity, or None when the realm has no account with this email. Raises
+    KeycloakUserError when the account cannot be linked, and KeycloakAdminError or a
+    requests exception when Keycloak cannot be queried.
+    """
+    client = KeycloakAdminClient(realm)
+
+    account = client.find_user(email=email)
+
+    if not account or (account.get("email") or "").lower() != email.lower():
+        return None
+
+    subject = account["id"]
+
+    linked = (
+        KeycloakIdentity.objects
+        .filter(realm=client.realm, subject=subject)
+        .first()
+    )
+
+    if linked:
+        if linked.user_id == user.pk:
+            return linked
+
+        logger.warning(
+            "Keycloak account %s:%s not linked to user %s: already linked to user %s.",
+            client.realm,
+            subject,
+            user.pk,
+            linked.user_id,
+        )
+
+        raise KeycloakUserError(
+            "This account is already linked to another user."
+        )
+
+    if not account.get("emailVerified", False):
+        raise KeycloakUserError(
+            "The email address of this account is not verified."
+        )
+
+    try:
+        with transaction.atomic():
+            identity = KeycloakIdentity.objects.create(
+                user=user,
+                subject=subject,
+                realm=client.realm,
+            )
+    except IntegrityError as exc:
+        logger.warning(
+            "Keycloak account %s:%s not linked to user %s: the user or the account is "
+            "already linked in this realm.",
+            client.realm,
+            subject,
+            user.pk,
+        )
+
+        raise KeycloakUserError(
+            "This user or this account is already linked in this realm."
+        ) from exc
+
+    logger.info(
+        "Keycloak account %s:%s linked to user %s.",
+        client.realm,
+        subject,
+        user.pk,
+    )
+
+    return identity
+
+
 def request_password_reset(
     *,
     username=None,
     email=None,
+    realm=None,
 ):
     """
-    Request a password reset for a Keycloak user.
+    Request a password reset for a Keycloak user of ``realm``.
 
     Keycloak sends the password reset email and handles the
     password-reset flow.
     """
 
-    client = KeycloakAdminClient()
+    client = KeycloakAdminClient(realm)
 
     keycloak_user = client.find_user(
         username=username,
@@ -211,5 +301,5 @@ def request_password_reset(
 
     client.send_password_reset_email(
         keycloak_user["id"],
-        client_id=get_keycloak_settings()["CLIENT_ID"],
+        client_id=client.config.client_id,
     )

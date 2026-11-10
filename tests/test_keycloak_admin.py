@@ -1,8 +1,22 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
+from authlib.integrations.base_client.errors import OAuthError
 from django.test import SimpleTestCase
 
-from django_keycloak.keycloak_admin import KeycloakAdminClient
+from django_keycloak.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
+
+
+class AdminClientCredentialsTests(SimpleTestCase):
+
+    @patch("django_keycloak.keycloak_admin.OAuth2Session")
+    def test_refused_credentials_are_a_keycloak_admin_error(self, session_class):
+        # What Keycloak answers to a wrong admin client secret.
+        session_class.return_value.fetch_token.side_effect = OAuthError(
+            error="unauthorized_client", description="Invalid client or Invalid client credentials",
+        )
+
+        with self.assertRaises(KeycloakAdminError):
+            KeycloakAdminClient()
 
 
 class AdminClientTimeoutTests(SimpleTestCase):
