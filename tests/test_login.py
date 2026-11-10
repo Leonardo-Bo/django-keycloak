@@ -1,15 +1,20 @@
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from authlib.integrations.base_client.errors import MismatchingStateError, OAuthError
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.http import HttpResponse
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from joserfc.errors import BadSignatureError
 from requests import ConnectionError as RequestsConnectionError
 
 from django_keycloak.models import KeycloakIdentity, KeycloakSession
 
-from .helpers import keycloak_settings
+from .helpers import keycloak_settings, start_login
+
+
+REALM = settings.KEYCLOAK["REALM"]
 
 
 def token(sub="subject-1", username="ada", email_verified=True, sid="kc-session-1"):
@@ -26,95 +31,164 @@ def token(sub="subject-1", username="ada", email_verified=True, sid="kc-session-
     }
 
 
-@patch("django_keycloak.views.configure_oauth")
+@patch("django_keycloak.services.get_realm_roles", Mock(return_value=set()))
+@patch("django_keycloak.views.get_oauth_client")
 class CallbackTests(TestCase):
 
-    def callback(self, configure_oauth, result=None, error=None):
-        authorize = configure_oauth.return_value.keycloak.authorize_access_token
+    def callback(self, get_oauth_client, result=None, error=None):
+        authorize = get_oauth_client.return_value.authorize_access_token
         authorize.return_value = result
         authorize.side_effect = error
+        start_login(self.client, REALM)
         return self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
 
     @override_settings(KEYCLOAK=keycloak_settings(USER_CREATION_MODE="active"))
-    def test_login_creates_user_identity_and_session_record(self, configure_oauth):
-        response = self.callback(configure_oauth, token())
+    def test_login_creates_user_identity_and_session_record(self, get_oauth_client):
+        response = self.callback(get_oauth_client, token())
 
         self.assertEqual(response.status_code, 302)
         user = get_user_model().objects.get(username="ada")
         self.assertEqual(int(self.client.session["_auth_user_id"]), user.pk)
         record = KeycloakSession.objects.get()
-        self.assertEqual(record.identity, user.keycloak_identity)
+        self.assertEqual(record.identity, user.keycloak_identities.get())
+        self.assertEqual(record.identity.realm, REALM)
         self.assertEqual(record.session_key, self.client.session.session_key)
         self.assertEqual(record.sid, "kc-session-1")
         self.assertIn("oidc_token", self.client.session)
+        self.assertEqual(self.client.session["oidc_realm"], REALM)
 
-    def test_cancelled_login_is_a_400_not_a_500(self, configure_oauth):
-        response = self.callback(configure_oauth, error=OAuthError(error="access_denied"))
+    def test_login_not_started_here_is_refused(self, get_oauth_client):
+        get_oauth_client.return_value.authorize_access_token.return_value = token()
+
+        response = self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
+
+        self.assertEqual(response.status_code, 400)
+        get_oauth_client.return_value.authorize_access_token.assert_not_called()
+
+    def test_cancelled_login_is_a_400_not_a_500(self, get_oauth_client):
+        response = self.callback(get_oauth_client, error=OAuthError(error="access_denied"))
 
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("_auth_user_id", self.client.session)
 
-    def test_mismatching_state_is_a_400(self, configure_oauth):
-        response = self.callback(configure_oauth, error=MismatchingStateError())
+    def test_mismatching_state_is_a_400(self, get_oauth_client):
+        response = self.callback(get_oauth_client, error=MismatchingStateError())
 
         self.assertEqual(response.status_code, 400)
 
-    def test_unreachable_keycloak_is_a_503(self, configure_oauth):
-        response = self.callback(configure_oauth, error=RequestsConnectionError())
+    def test_unreachable_keycloak_is_a_503(self, get_oauth_client):
+        response = self.callback(get_oauth_client, error=RequestsConnectionError())
 
         self.assertEqual(response.status_code, 503)
 
     @override_settings(KEYCLOAK=keycloak_settings(USER_CREATION_MODE="active"))
-    def test_unverified_email_is_refused_and_no_token_is_kept(self, configure_oauth):
-        response = self.callback(configure_oauth, token(email_verified=False))
+    def test_unverified_email_is_refused_and_nothing_is_created(self, get_oauth_client):
+        response = self.callback(get_oauth_client, token(email_verified=False))
 
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("_auth_user_id", self.client.session)
         self.assertNotIn("oidc_token", self.client.session)
+        self.assertFalse(get_user_model().objects.exists())
 
     @override_settings(KEYCLOAK=keycloak_settings(USER_CREATION_MODE="pending"))
-    def test_inactive_user_is_refused(self, configure_oauth):
-        response = self.callback(configure_oauth, token())
+    def test_inactive_user_is_refused(self, get_oauth_client):
+        response = self.callback(get_oauth_client, token())
 
         self.assertEqual(response.status_code, 403)
         self.assertNotIn("_auth_user_id", self.client.session)
 
+    def test_disabled_mode_refuses_unknown_identity(self, get_oauth_client):
+        response = self.callback(get_oauth_client, token())
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(get_user_model().objects.exists())
+
     @override_settings(KEYCLOAK=keycloak_settings(USER_CREATION_MODE="active"))
-    def test_existing_unlinked_username_is_not_taken_over(self, configure_oauth):
+    def test_existing_unlinked_username_is_not_taken_over(self, get_oauth_client):
         get_user_model().objects.create(username="ada")
 
-        response = self.callback(configure_oauth, token())
+        response = self.callback(get_oauth_client, token())
 
         self.assertEqual(response.status_code, 403)
         self.assertFalse(KeycloakIdentity.objects.exists())
         self.assertNotIn("_auth_user_id", self.client.session)
 
-    def test_settings_are_untouched(self, configure_oauth):
+    def test_settings_are_untouched(self, get_oauth_client):
         # Guard: the overrides above must not leak into other tests.
         self.assertEqual(settings.KEYCLOAK["USER_CREATION_MODE"], "disabled")
 
 
-@patch("django_keycloak.views.configure_oauth")
+@patch("django_keycloak.services.get_realm_roles")
+@patch("django_keycloak.views.get_oauth_client")
 class SuperuserTests(TestCase):
 
-    def test_superuser_needs_a_verified_email_too(self, configure_oauth):
-        authorize = configure_oauth.return_value.keycloak.authorize_access_token
-        authorize.return_value = token(
-            username=settings.KEYCLOAK.get("SUPERUSER", "django-admin"),
-            email_verified=False,
-        )
+    def callback(self, get_oauth_client, result):
+        get_oauth_client.return_value.authorize_access_token.return_value = result
+        start_login(self.client, REALM)
+        return self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
 
-        response = self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
+    def test_realm_role_creates_a_superuser(self, get_oauth_client, get_realm_roles):
+        get_realm_roles.return_value = {"django-superuser", "offline_access"}
+
+        response = self.callback(get_oauth_client, token(username="boss"))
+
+        self.assertEqual(response.status_code, 302)
+        user = get_user_model().objects.get(username="boss")
+        self.assertTrue(user.is_superuser and user.is_staff and user.is_active)
+        get_realm_roles.assert_called_once()
+        self.assertEqual(get_realm_roles.call_args.args[0], "access")
+
+    def test_username_alone_no_longer_makes_a_superuser(self, get_oauth_client, get_realm_roles):
+        get_realm_roles.return_value = {"offline_access"}
+
+        response = self.callback(get_oauth_client, token(username="django-admin"))
 
         self.assertEqual(response.status_code, 403)
-        self.assertNotIn("_auth_user_id", self.client.session)
+        self.assertFalse(get_user_model().objects.exists())
+
+    def test_superuser_needs_a_verified_email_too(self, get_oauth_client, get_realm_roles):
+        get_realm_roles.return_value = {"django-superuser"}
+
+        response = self.callback(get_oauth_client, token(username="boss", email_verified=False))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(get_user_model().objects.exists())
+
+    def test_unverifiable_access_token_is_refused(self, get_oauth_client, get_realm_roles):
+        get_realm_roles.side_effect = BadSignatureError()
+
+        response = self.callback(get_oauth_client, token(username="boss"))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(get_user_model().objects.exists())
+
+    def test_role_does_not_change_an_existing_user(self, get_oauth_client, get_realm_roles):
+        get_realm_roles.return_value = {"django-superuser"}
+        user = get_user_model().objects.create(username="ada")
+        KeycloakIdentity.objects.create(user=user, subject="subject-1", realm=REALM)
+
+        response = self.callback(get_oauth_client, token())
+
+        self.assertEqual(response.status_code, 302)
+        user.refresh_from_db()
+        self.assertFalse(user.is_superuser)
+        get_realm_roles.assert_not_called()
+
+    @override_settings(KEYCLOAK=keycloak_settings(SUPERUSER_ROLE=None))
+    def test_no_role_configured_means_no_automatic_superuser(
+        self, get_oauth_client, get_realm_roles,
+    ):
+        response = self.callback(get_oauth_client, token(username="boss"))
+
+        self.assertEqual(response.status_code, 403)
+        get_realm_roles.assert_not_called()
 
 
-@patch("django_keycloak.views.configure_oauth")
+@patch("django_keycloak.views.get_oauth_client")
 class UnreachableKeycloakTests(TestCase):
 
-    def test_login_is_a_503_when_keycloak_cannot_be_reached(self, configure_oauth):
-        configure_oauth.return_value.keycloak.authorize_redirect.side_effect = (
+    def test_login_is_a_503_when_keycloak_cannot_be_reached(self, get_oauth_client):
+        get_oauth_client.return_value.authorize_redirect.side_effect = (
             RequestsConnectionError()
         )
 
@@ -122,11 +196,24 @@ class UnreachableKeycloakTests(TestCase):
 
         self.assertEqual(response.status_code, 503)
 
-    def test_registration_is_a_503_when_keycloak_cannot_be_reached(self, configure_oauth):
-        configure_oauth.return_value.keycloak.authorize_redirect.side_effect = (
+    def test_registration_is_a_503_when_keycloak_cannot_be_reached(self, get_oauth_client):
+        get_oauth_client.return_value.authorize_redirect.side_effect = (
             RequestsConnectionError()
         )
 
         response = self.client.get(reverse("keycloak-register"))
 
         self.assertEqual(response.status_code, 503)
+
+
+@patch("django_keycloak.views.get_oauth_client")
+class LoginRedirectTests(TestCase):
+
+    def test_redirect_uri_comes_from_the_url_configuration(self, get_oauth_client):
+        get_oauth_client.return_value.authorize_redirect.return_value = HttpResponse(status=302)
+
+        self.client.get(reverse("keycloak-login"))
+
+        redirect_uri = get_oauth_client.return_value.authorize_redirect.call_args.args[1]
+        self.assertEqual(redirect_uri, "http://testserver" + reverse("keycloak-callback"))
+        self.assertEqual(self.client.session["oidc_login_realm"], REALM)

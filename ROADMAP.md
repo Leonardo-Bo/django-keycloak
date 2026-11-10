@@ -1,37 +1,58 @@
 # Roadmap
 
-What is left before 1.0.0, the release that freezes the public behaviour.
-Written 2026-11-08, after 0.4.0; updated after 0.4.1.
+Written 2026-11-08, after 0.4.0; updated 2026-11-10 for 1.0.0, the release that freezes the
+public behaviour. From now on, a change to settings, URLs and their answers, service functions
+or models needs a major version.
 
-## Before 1.0.0
+## Done in 1.0.0
 
-1. **Validate with a second application.** report_hub (phase 1) is the second project using
-   the package after trio. Collect what it needs before freezing the API.
-2. **Superuser from a Keycloak role, not from the username.** Today the Keycloak user whose
-   username equals `SUPERUSER` becomes Django superuser at first login. With self-registration
-   open and that username still free in the realm, anyone can register it (0.4.0 at least
-   requires a verified email). Map the superuser from a realm role that only Keycloak
-   administrators can assign; read the role from the access token, not from `userinfo`.
-3. **Logout only by POST, with CSRF.** `/api/oidc/logout/` and `/api/oidc/admin-logout/`
-   also answer GET, so an external page can log a user out with a link. Breaking for clients
-   that call it with GET (trio).
-4. **Configurable URL prefix.** Some redirects hard-code `/api/oidc/login/` and
-   `/api/oidc/callback/`; use `reverse()` so the URLs can be mounted elsewhere.
-5. **Remove the pre-0.4.0 fallback** in `end_sessions` (scan of every session) once sessions
-   opened before 0.4.0 have expired everywhere (`SESSION_COOKIE_AGE` after the last
-   application is upgraded).
-6. **Clean up `KeycloakSession` rows of expired sessions**, for example in a management
-   command run next to `clearsessions`. Today a row stays until back-channel logout or an
-   explicit logout of that session.
+- Superuser from a Keycloak realm role (`SUPERUSER_ROLE`), read from the verified access token.
+- Logout and admin logout by POST only, with CSRF.
+- URLs found with `reverse()`: any mount prefix works.
+- Pre-0.4.0 session scan removed from back-channel logout.
+- `keycloak_clearsessions` deletes the records of expired sessions.
+- Several realms in one project (`REALMS`, `REALM_RESOLVER`), one identity per user and realm,
+  `link_existing_account`, accounts in a second realm for an existing user. Asked by
+  report_hub (one installation, one realm per organisation).
 
-## Checks not yet done against a real Keycloak
+## Checked against a real Keycloak (local Keycloak 26.7.1, 2026-11-10)
 
-- Keycloak stopped or not answering during login, logout and admin logout (covered by unit
-  tests only; see "Simulating a slow Keycloak" in the README). A missing realm at login was
-  checked against a real Keycloak in 0.4.1 (`503`).
-- Two Keycloak sessions of the same user and back-channel logout with `sid` ending only one.
+With `tests/testproject/live_checks.py` (realms `dk-alpha` and `dk-beta`), all passing:
+
+- superuser created from the realm role; unverified email refused; account without identity
+  refused (`USER_CREATION_MODE = "disabled"`);
+- existing accounts of two realms linked to one Django user; unverified account not linked;
+- one user logged in through two realms; a session of one realm refused on a host of the other;
+- back-channel logout with `sid` ending only one of two Keycloak sessions, and leaving the
+  other realm's session alone; admin "sign out" of a user ending its Django sessions;
+- logout: GET `405`, no CSRF `403`, POST `204` ending only the session realm's Keycloak sessions;
+- token refresh in the session's realm;
+- account created in a second realm for an existing Django user;
+- password change, end to end (when Keycloak asks for the login again, see below).
+
+Also checked by hand: single-realm flat settings (login, superuser, Django Admin's own logout
+button, logout, back-channel logout); login, logout and admin logout with Keycloak stopped
+(`503` at once) and not answering (`503` after 10 s for login, 5 s for logout; 0.4.1 waited
+forever at login); migration 0003 on a database with 0.4 data (SQLite).
+
+## Not yet checked
+
+- **Password change started from an existing Keycloak session.** In the simulated browser
+  Keycloak 26 answers `already_logged_in` and the callback answers `400`. When Keycloak asks for
+  the login first, the flow works. Check it in a real browser; if it fails there too, look at
+  Keycloak's required-action settings (or send `prompt=login`).
+- Migration 0003 on PostgreSQL (checked on SQLite only).
+- Token refresh failing on a real Keycloak (an ended session): covered by unit tests; last
+  checked live before 0.4.0.
 
 ## Upgrading applications
 
-- **trio** is on 0.3.0. Moving to 0.4.0 needs `python manage.py migrate` and a verified
-  email on the Keycloak `SUPERUSER` account (otherwise the admin login is refused).
+The steps are in the CHANGELOG under 1.0.0.
+
+- **trio** is on 0.3.0. To 1.0.0: migrate; remove `SUPERUSER` (set `SUPERUSER_ROLE` if new
+  superusers are wanted); logout by POST with CSRF in `Navbar.vue`; verified email on the
+  administrator; delete existing sessions at the upgrade; schedule `keycloak_clearsessions`.
+- **report_hub** is on 0.4.1. Phase 8b moves it to `REALMS` and `REALM_RESOLVER`, logout by POST
+  in `stores/session.ts`, `link_existing_account` at invitation acceptance (D-74) and
+  `create_user_with_temporary_password(..., realm=..., user=...)` for people already known in
+  another organisation.

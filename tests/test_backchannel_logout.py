@@ -59,6 +59,7 @@ class BackchannelLogoutTests(TestCase):
             "events": {EVENT: {}},
             **claims,
         }
+        payload = {name: value for name, value in payload.items() if value is not None}
         key = key or self.key
         return jwt.encode({"alg": "RS256", "kid": key.kid}, payload, key)
 
@@ -83,14 +84,24 @@ class BackchannelLogoutTests(TestCase):
         self.assertFalse(self.session_exists(self.first))
         self.assertFalse(self.session_exists(self.second))
 
-    def test_sessions_without_record_are_still_ended(self):
-        # Sessions opened before 0.4.0 have no KeycloakSession record.
+    def test_sessions_without_record_are_not_scanned_for(self):
+        # The scan for sessions opened before 0.4.0 was removed in 1.0.0.
         KeycloakSession.objects.all().delete()
 
         response = self.post(self.logout_token())
 
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(self.session_exists(self.first))
+        self.assertTrue(self.session_exists(self.first))
+
+    def test_get_is_not_allowed(self):
+        response = self.client.get(reverse("keycloak-backchannel-logout"))
+
+        self.assertEqual(response.status_code, 405)
+
+    def test_token_that_is_not_a_jwt_is_refused(self):
+        response = self.post("not-a-token")
+
+        self.assertEqual(response.status_code, 400)
 
     def test_token_signed_by_another_key_is_refused(self):
         stranger = RSAKey.generate_key(2048, parameters={"kid": "key-1"})
@@ -113,6 +124,18 @@ class BackchannelLogoutTests(TestCase):
 
     def test_token_with_nonce_is_refused(self):
         response = self.post(self.logout_token(nonce="n"))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(self.session_exists(self.first))
+
+    def test_token_without_issue_time_is_refused(self):
+        response = self.post(self.logout_token(iat=None))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertTrue(self.session_exists(self.first))
+
+    def test_token_without_expiry_is_refused(self):
+        response = self.post(self.logout_token(exp=None))
 
         self.assertEqual(response.status_code, 400)
         self.assertTrue(self.session_exists(self.first))

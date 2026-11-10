@@ -52,8 +52,7 @@ KEYCLOAK = {
     "CLIENT_SECRET": config["KEYCLOAK_CLIENT_SECRET"],
 
     "USER_CREATION_MODE": "disabled",
-    "SUPERUSER": "django-admin",
-    "REGISTRATION_MODE": "pending",
+    "SUPERUSER_ROLE": "django-superuser",
 
     "ADMIN": {
         "CLIENT_ID": config["KEYCLOAK_ADMIN_CLIENT_ID"],
@@ -67,6 +66,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
+    'django_keycloak.middleware.KeycloakTokenRefreshMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

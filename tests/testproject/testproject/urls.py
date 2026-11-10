@@ -23,6 +23,7 @@ from django_keycloak.views import (
 )
 
 from .views import (
+    session_view,
     test_create_user,
     test_password_reset,
 )
@@ -35,4 +36,5 @@ urlpatterns = [
     path("api/oidc/", include("django_keycloak.urls")),
     path("test-create-user/", test_create_user),
     path("test-password-reset/", test_password_reset),
+    path("session/", session_view),
 ]
