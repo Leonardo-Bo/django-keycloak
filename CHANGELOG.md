@@ -1,5 +1,11 @@
 ## Changelog
 
+### Unreleased
+
+#### Added
+
+- `create_user_with_temporary_password(..., locale="it")` and `KeycloakAdminClient.create_user(..., locale=...)` store the language of the new Keycloak account (its `locale` attribute), so Keycloak's emails and pages reach the user in that language. Without `locale`, nothing changes.
+
 ### 1.0.0
 
 From this release the public behaviour is frozen: settings, URLs and their answers, service functions, models. Changes to them will need a major version.

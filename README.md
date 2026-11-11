@@ -384,6 +384,8 @@ The function creates an enabled Keycloak user with a temporary password (Keycloa
 
 `realm` is the realm name. It can be omitted when a single realm is configured, and is required with several.
 
+`locale` (optional, for example `"it"`) is stored as the user's `locale` attribute in Keycloak, so Keycloak writes its emails and pages to that user in that language. The realm must have internationalization enabled with that language among the supported locales (Realm settings → Localization); otherwise Keycloak drops the attribute and uses its default.
+
 To give an existing Django user an account in another realm, pass it as `user`: the Keycloak account is created in `realm` and linked to that user, and no Django user is created.
 
 ```python

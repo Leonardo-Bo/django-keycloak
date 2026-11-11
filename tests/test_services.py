@@ -28,6 +28,22 @@ class CreateUserWithTemporaryPasswordTests(TestCase):
             "keycloak-subject",
         )
         client.delete_user.assert_not_called()
+        self.assertIsNone(client.create_user.call_args.kwargs["locale"])
+
+    @patch("django_keycloak.services.KeycloakAdminClient")
+    def test_passes_the_locale_to_keycloak(self, client_class):
+        client = client_class.return_value
+        client.create_user.return_value = "keycloak-subject"
+        client.realm = "test-realm"
+
+        create_user_with_temporary_password(
+            username="new-user",
+            email="new-user@example.com",
+            password="Temp-Pass-123!",
+            locale="it",
+        )
+
+        self.assertEqual(client.create_user.call_args.kwargs["locale"], "it")
 
     @patch("django_keycloak.services.KeycloakAdminClient")
     def test_keycloak_user_is_removed_when_django_creation_fails(

@@ -57,6 +57,7 @@ class KeycloakAdminClient:
         enabled=True,
         temporary_password=True,
         required_actions=None,
+        locale=None,
     ):
         """
         Create a Keycloak user.
@@ -65,23 +66,32 @@ class KeycloakAdminClient:
 
         - VERIFY_EMAIL
         - UPDATE_PASSWORD
+
+        locale (for example "en") is stored as the user's ``locale`` attribute: Keycloak
+        writes its emails and pages to the user in that language, if the realm has
+        internationalization enabled with it among the supported locales.
         """
+        representation = {
+            "username": username,
+            "email": email,
+            "enabled": enabled,
+            "emailVerified": False,
+            "requiredActions": required_actions or [],
+            "credentials": [
+                {
+                    "type": "password",
+                    "value": password,
+                    "temporary": temporary_password,
+                }
+            ],
+        }
+
+        if locale:
+            representation["attributes"] = {"locale": [locale]}
+
         response = self.session.post(
             self._url("users"),
-            json={
-                "username": username,
-                "email": email,
-                "enabled": enabled,
-                "emailVerified": False,
-                "requiredActions": required_actions or [],
-                "credentials": [
-                    {
-                        "type": "password",
-                        "value": password,
-                        "temporary": temporary_password,
-                    }
-                ],
-            },
+            json=representation,
             timeout=10,
         )
 

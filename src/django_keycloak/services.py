@@ -142,10 +142,14 @@ def create_user_with_temporary_password(
     password,
     realm=None,
     user=None,
+    locale=None,
 ):
     """
     Create an enabled Keycloak user with a temporary password in ``realm``
     and link it to a Django user.
+
+    ``locale`` (for example "en") is the language Keycloak uses for its emails and pages
+    to this user; without it, the realm's default.
 
     Without ``user``, an active Django user is created with the same username and email.
     With ``user``, the new Keycloak account is linked to that existing Django user, for a
@@ -165,6 +169,7 @@ def create_user_with_temporary_password(
         password=password,
         enabled=True,
         temporary_password=True,
+        locale=locale,
     )
 
     try:
