@@ -1,4 +1,5 @@
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 from authlib.integrations.base_client.errors import MismatchingStateError, OAuthError
 from django.conf import settings
@@ -263,3 +264,143 @@ class UiLocalesTests(TestCase):
 
         without = self.client.get(reverse("keycloak-change-password"))
         self.assertNotIn("ui_locales", without["Location"])
+
+
+def denied_view(request, reason, logout_url):
+    return HttpResponse(f"{reason}|{logout_url}", status=403)
+
+
+@patch("django_keycloak.services.get_realm_roles", Mock(return_value=set()))
+@patch("django_keycloak.views.get_oauth_client")
+class LoginDeniedViewTests(TestCase):
+
+    def callback(self, get_oauth_client, result, **overrides):
+        get_oauth_client.return_value.authorize_access_token.return_value = {
+            **result, "id_token": "the-id-token",
+        }
+        resolver = f"{__name__}.denied_view"
+
+        with override_settings(KEYCLOAK=keycloak_settings(LOGIN_DENIED_VIEW=resolver, **overrides)):
+            start_login(self.client, REALM)
+            response = self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertNotIn("_auth_user_id", self.client.session)
+        reason, logout_url = response.content.decode().split("|")
+        return reason, logout_url
+
+    def test_no_user(self, get_oauth_client):
+        reason, logout_url = self.callback(get_oauth_client, token())
+
+        self.assertEqual(reason, "no_user")
+        url = urlsplit(logout_url)
+        self.assertEqual(
+            f"{url.scheme}://{url.netloc}{url.path}",
+            f"{settings.KEYCLOAK['SERVER_URL'].rstrip('/')}/realms/{REALM}"
+            "/protocol/openid-connect/logout",
+        )
+        self.assertEqual(parse_qs(url.query), {
+            "client_id": [settings.KEYCLOAK["CLIENT_ID"]],
+            "post_logout_redirect_uri": ["http://testserver" + reverse("keycloak-login")],
+            "id_token_hint": ["the-id-token"],
+        })
+
+    def test_email_not_verified(self, get_oauth_client):
+        reason, _ = self.callback(get_oauth_client, token(email_verified=False))
+        self.assertEqual(reason, "email_not_verified")
+
+    def test_inactive(self, get_oauth_client):
+        reason, _ = self.callback(get_oauth_client, token(), USER_CREATION_MODE="pending")
+        self.assertEqual(reason, "inactive")
+
+    def test_username_taken(self, get_oauth_client):
+        get_user_model().objects.create(username="ada")
+        reason, _ = self.callback(get_oauth_client, token(), USER_CREATION_MODE="active")
+        self.assertEqual(reason, "username_taken")
+
+    def test_logout_url_carries_the_language(self, get_oauth_client):
+        self.client.cookies["lang"] = "it"
+        _, logout_url = self.callback(
+            get_oauth_client, token(), UI_LOCALES=f"{__name__}.language_from_cookie",
+        )
+        self.assertEqual(parse_qs(urlsplit(logout_url).query)["ui_locales"], ["it"])
+
+    def test_plain_403_without_the_setting(self, get_oauth_client):
+        get_oauth_client.return_value.authorize_access_token.return_value = token()
+        start_login(self.client, REALM)
+
+        response = self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.content.decode(),
+            "No Django user is associated with this Keycloak identity.",
+        )
+
+
+@patch("django_keycloak.services.get_realm_roles", Mock(return_value=set()))
+@patch("django_keycloak.views.get_oauth_client")
+class WithoutNewSettingsTests(TestCase):
+    """Without UI_LOCALES and LOGIN_DENIED_VIEW, the answers and requests are as in 1.0.0."""
+
+    def test_settings_are_not_set(self, get_oauth_client):
+        self.assertNotIn("UI_LOCALES", settings.KEYCLOAK)
+        self.assertNotIn("LOGIN_DENIED_VIEW", settings.KEYCLOAK)
+
+    def test_login_and_registration_send_the_same_parameters(self, get_oauth_client):
+        authorize = get_oauth_client.return_value.authorize_redirect
+        authorize.return_value = HttpResponse(status=302)
+
+        self.client.get(reverse("keycloak-login"))
+        self.assertEqual(authorize.call_args.kwargs, {})
+
+        self.client.get(reverse("keycloak-register"))
+        self.assertEqual(authorize.call_args.kwargs, {"kc_action": "REGISTER"})
+
+    def test_password_change_sends_the_same_parameters(self, get_oauth_client):
+        self.client.force_login(get_user_model().objects.create(username="ada"))
+
+        response = self.client.get(reverse("keycloak-change-password"))
+
+        self.assertEqual(
+            sorted(parse_qs(urlsplit(response["Location"]).query)),
+            ["client_id", "kc_action", "redirect_uri", "response_type", "scope", "state"],
+        )
+
+    def refused(self, get_oauth_client, result, **overrides):
+        get_oauth_client.return_value.authorize_access_token.return_value = {
+            **result, "id_token": "the-id-token",
+        }
+
+        with override_settings(KEYCLOAK=keycloak_settings(**overrides)):
+            start_login(self.client, REALM)
+            response = self.client.get(reverse("keycloak-callback"), {"code": "c", "state": "s"})
+
+        self.assertEqual(response.status_code, 403)
+        return response.content.decode()
+
+    def test_refused_logins_give_the_same_answers(self, get_oauth_client):
+        self.assertEqual(
+            self.refused(get_oauth_client, token()),
+            "No Django user is associated with this Keycloak identity.",
+        )
+        self.assertEqual(
+            self.refused(get_oauth_client, token(email_verified=False)),
+            "Email address is not verified.",
+        )
+        self.assertEqual(
+            self.refused(get_oauth_client, token(), USER_CREATION_MODE="pending"),
+            "Your account is inactive. Please wait for an administrator to activate it.",
+        )
+        self.assertEqual(
+            self.refused(get_oauth_client, token(sub="other", username="ada"),
+                         USER_CREATION_MODE="active"),
+            "An account with this username already exists and is not linked "
+            "to this login. Please contact an administrator.",
+        )
+        self.assertEqual(
+            self.refused(get_oauth_client, {**token(), "userinfo": {
+                "sub": "nameless", "email_verified": True,
+            }}),
+            "Keycloak did not provide a username or email.",
+        )

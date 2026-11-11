@@ -54,6 +54,10 @@ class Realm:
         return f"{self.issuer}/protocol/openid-connect/token"
 
     @property
+    def end_session_url(self):
+        return f"{self.issuer}/protocol/openid-connect/logout"
+
+    @property
     def certs_url(self):
         return f"{self.issuer}/protocol/openid-connect/certs"
 

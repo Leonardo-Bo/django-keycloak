@@ -6,6 +6,8 @@
 
 - `create_user_with_temporary_password(..., locale="it")` and `KeycloakAdminClient.create_user(..., locale=...)` store the language of the new Keycloak account (its `locale` attribute), so Keycloak's emails and pages reach the user in that language. Without `locale`, nothing changes.
 - Setting `UI_LOCALES`: a callable (or dotted path) that receives the request and returns the language of Keycloak's pages. It is sent as `ui_locales` with the login, the registration and the password change. Default `None`: nothing is sent, as before.
+- Setting `LOGIN_DENIED_VIEW`: a view (or dotted path) that answers a refused login, called as `view(request, reason, logout_url=...)` with `reason` one of `no_user`, `email_not_verified`, `inactive`, `username_taken`, `invalid_login`, and `logout_url` the Keycloak logout address that comes back to the login, to sign in with another account. Default `None`: the plain `403` messages, as before.
+- `services.keycloak_logout_url(request, ...)` builds that address. `KeycloakUserError` has a `reason`.
 
 ### 1.0.0
 

@@ -81,6 +81,8 @@ Then set the redirect URI and the web origin:
 | Valid redirect URI | `http://127.0.0.1:8000/api/oidc/callback/` |
 | Web origin | `http://127.0.0.1:8000` |
 
+If the application offers "sign in with another account" after a refused login (see [Refused logins](#refused-logins)), also add the login URL, `http://127.0.0.1:8000/api/oidc/login/`, to **Valid post logout redirect URIs**.
+
 In production, use the application's actual HTTPS URLs.
 
 The resulting configuration is:
@@ -231,6 +233,7 @@ KEYCLOAK = {
 | `USER_CREATION_MODE` | `"pending"` | What happens when a Keycloak user without a Django user logs in: `disabled`, `pending` or `active`. See [Users](#users). |
 | `SUPERUSER_ROLE` | `None` | Keycloak realm role that makes a user Django superuser at first login. `None` turns automatic superusers off. See [Superuser](#superuser). |
 | `TOKEN_REFRESH_INTERVAL` | `86400` | Seconds between token refreshes. Used by `KeycloakTokenRefreshMiddleware`. |
+| `LOGIN_DENIED_VIEW` | `None` | View, or its dotted path, that answers a refused login. See [Refused logins](#refused-logins). |
 | `UI_LOCALES` | `None` | Callable, or its dotted path, that receives the request and returns the language of Keycloak's pages (for example `"it"`), or `None`. See [Language of Keycloak's pages](#language-of-keycloaks-pages). |
 
 The settings are checked when Django starts (`manage.py check`, `runserver`, `migrate`): a missing or invalid value stops it with an error that names it.
@@ -352,6 +355,34 @@ After the user is resolved, the login is refused with `403` if the Django user i
 A Django user that already has the same username but is not linked to this identity is never taken over: the login is refused with `403` and the case is logged.
 
 Only the username (Keycloak's `preferred_username`, or the email if missing) and the email are copied to Django, and only when the user is created. Later changes in Keycloak are not synchronized.
+
+### Refused logins
+
+By default a refused login answers `403` with a short English message. To show the application's own page, set `LOGIN_DENIED_VIEW` to a view, or its dotted path. It is called as `view(request, reason, logout_url=...)` and should answer `403`:
+
+| `reason` | When |
+| --- | --- |
+| `no_user` | No Django user for this Keycloak account (`USER_CREATION_MODE` is `disabled`), for example someone who signed in without an invitation. |
+| `email_not_verified` | Keycloak reports the email address as not verified. |
+| `inactive` | The Django user is inactive, for example waiting for activation (`pending`). |
+| `username_taken` | A Django user with the same username exists and is not linked to this account. |
+| `invalid_login` | Keycloak gave no username or email, or the access token could not be verified. |
+
+The user is not logged in to Django but is still logged in to Keycloak, so the next login would use the same account. `logout_url` ends the Keycloak session and comes back to the login, where another account can be used: offer it as a link ("Sign in with another account"). It carries the ID token of the refused login, so Keycloak does not ask for confirmation, and the language of `UI_LOCALES`. The login URL must be among the client's **Valid post logout redirect URIs**. `logout_url` is `None` only if the request belongs to no realm.
+
+```python
+from django.shortcuts import render
+
+def login_denied(request, reason, logout_url):
+    return render(request, "login_denied.html", {"reason": reason, "logout_url": logout_url}, status=403)
+
+KEYCLOAK = {
+    ...
+    "LOGIN_DENIED_VIEW": "myproject.views.login_denied",
+}
+```
+
+To build the same address elsewhere, use `django_keycloak.services.keycloak_logout_url(request, realm=None, id_token=None, return_to=None)`: `realm` defaults to the request's, `return_to` to the application's login.
 
 ### Superuser
 
@@ -494,7 +525,7 @@ When Keycloak sends the user back to `/api/oidc/callback/`:
 | Login completed | Redirect to `next`, or `/` |
 | User cancelled on Keycloak, expired or replayed login (state mismatch), code refused, login started in another realm | `400` |
 | Keycloak unreachable while exchanging the code | `503` |
-| No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403` |
+| No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403`, or the `LOGIN_DENIED_VIEW` (see [Refused logins](#refused-logins)) |
 
 Failures are logged at `WARNING` level with the reason.
 

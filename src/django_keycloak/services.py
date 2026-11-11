@@ -1,13 +1,16 @@
 import logging
 
+from urllib.parse import urlencode
+
 from django.db import IntegrityError, transaction
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from joserfc.errors import JoseError
 
 from .client import get_realm_roles
 from .keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from .models import KeycloakIdentity
-from .settings import get_realm
+from .settings import get_realm, get_ui_locales, resolve_realm
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +18,13 @@ logger = logging.getLogger(__name__)
 class KeycloakUserError(Exception):
     """
     Raised when a Keycloak user cannot be mapped to a Django user.
+
+    ``reason`` is a short code for the login refusals (see LOGIN_DENIED_VIEW), or None.
     """
+
+    def __init__(self, message, reason=None):
+        super().__init__(message)
+        self.reason = reason
 
 
 def get_or_create_django_user(userinfo, *, realm, access_token=None):
@@ -57,7 +66,8 @@ def get_or_create_django_user(userinfo, *, realm, access_token=None):
 
     if not username:
         raise KeycloakUserError(
-            "Keycloak did not provide a username or email."
+            "Keycloak did not provide a username or email.",
+            reason="invalid_login",
         )
 
     if realm.superuser_role and access_token:
@@ -73,7 +83,8 @@ def get_or_create_django_user(userinfo, *, realm, access_token=None):
             )
 
             raise KeycloakUserError(
-                "The login could not be verified. Please try again."
+                "The login could not be verified. Please try again.",
+                reason="invalid_login",
             ) from exc
 
         if realm.superuser_role in roles:
@@ -91,7 +102,8 @@ def get_or_create_django_user(userinfo, *, realm, access_token=None):
 
     if mode == "disabled":
         raise KeycloakUserError(
-            "No Django user is associated with this Keycloak identity."
+            "No Django user is associated with this Keycloak identity.",
+            reason="no_user",
         )
 
     return _create_user_and_identity(
@@ -129,7 +141,8 @@ def _create_user_and_identity(subject, realm, **user_fields):
 
         raise KeycloakUserError(
             "An account with this username already exists and is not linked "
-            "to this login. Please contact an administrator."
+            "to this login. Please contact an administrator.",
+            reason="username_taken",
         ) from exc
 
     return user
@@ -308,3 +321,38 @@ def request_password_reset(
         keycloak_user["id"],
         client_id=client.config.client_id,
     )
+
+
+def keycloak_logout_url(request, *, realm=None, id_token=None, return_to=None):
+    """
+    Return the address that ends the browser's Keycloak session and comes back.
+
+    Keycloak keeps its own session after a refused login, so the next login would use the
+    same account; send the user here to sign in with another one. ``realm`` defaults to
+    the request's realm, ``return_to`` to this application's login (absolute). With
+    ``id_token`` Keycloak logs out without asking for confirmation. ``return_to`` must be
+    among the client's "Valid post logout redirect URIs" in Keycloak.
+
+    Returns None when the request belongs to no realm.
+    """
+    realm = get_realm(realm) if realm else resolve_realm(request)
+
+    if realm is None:
+        return None
+
+    params = {
+        "client_id": realm.client_id,
+        "post_logout_redirect_uri": return_to or request.build_absolute_uri(
+            reverse("keycloak-login")
+        ),
+    }
+
+    if id_token:
+        params["id_token_hint"] = id_token
+
+    ui_locales = get_ui_locales(request)
+
+    if ui_locales:
+        params["ui_locales"] = ui_locales
+
+    return f"{realm.end_session_url}?{urlencode(params)}"
