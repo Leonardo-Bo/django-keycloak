@@ -27,6 +27,7 @@ from .sessions import end_sessions, forget_session
 from .settings import (
     get_realm_by_issuer,
     get_session_realm,
+    get_ui_locales,
     resolve_realm,
 )
 
@@ -113,6 +114,11 @@ def start_login(request: HttpRequest, step: str, **params) -> HttpResponse:
     redirect_uri = request.build_absolute_uri(
         reverse("keycloak-callback")
     )
+
+    ui_locales = get_ui_locales(request)
+
+    if ui_locales:
+        params["ui_locales"] = ui_locales
 
     try:
         return get_oauth_client(realm).authorize_redirect(
@@ -322,6 +328,11 @@ def change_password_view(
         "kc_action": "UPDATE_PASSWORD",
         "state": state,
     }
+
+    ui_locales = get_ui_locales(request)
+
+    if ui_locales:
+        params["ui_locales"] = ui_locales
 
     return redirect(f"{realm.authorization_url}?{urlencode(params)}")
 

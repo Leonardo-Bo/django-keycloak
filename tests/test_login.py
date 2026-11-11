@@ -217,3 +217,49 @@ class LoginRedirectTests(TestCase):
         redirect_uri = get_oauth_client.return_value.authorize_redirect.call_args.args[1]
         self.assertEqual(redirect_uri, "http://testserver" + reverse("keycloak-callback"))
         self.assertEqual(self.client.session["oidc_login_realm"], REALM)
+
+
+def language_from_cookie(request):
+    return request.COOKIES.get("lang")
+
+
+@patch("django_keycloak.views.get_oauth_client")
+class UiLocalesTests(TestCase):
+
+    def login_params(self, get_oauth_client, url="keycloak-login"):
+        get_oauth_client.return_value.authorize_redirect.return_value = HttpResponse(status=302)
+        self.client.get(reverse(url))
+        return get_oauth_client.return_value.authorize_redirect.call_args.kwargs
+
+    def test_no_ui_locales_without_the_setting(self, get_oauth_client):
+        self.assertNotIn("ui_locales", self.login_params(get_oauth_client))
+
+    def test_login_and_registration_send_the_language(self, get_oauth_client):
+        self.client.cookies["lang"] = "it"
+        resolver = f"{__name__}.language_from_cookie"
+
+        with override_settings(KEYCLOAK=keycloak_settings(UI_LOCALES=resolver)):
+            self.assertEqual(self.login_params(get_oauth_client)["ui_locales"], "it")
+            params = self.login_params(get_oauth_client, "keycloak-register")
+
+        self.assertEqual(params["ui_locales"], "it")
+        self.assertEqual(params["kc_action"], "REGISTER")
+
+    def test_no_ui_locales_when_the_resolver_returns_none(self, get_oauth_client):
+        with override_settings(KEYCLOAK=keycloak_settings(UI_LOCALES=language_from_cookie)):
+            self.assertNotIn("ui_locales", self.login_params(get_oauth_client))
+
+    def test_password_change_sends_the_language(self, get_oauth_client):
+        user = get_user_model().objects.create(username="ada")
+        self.client.force_login(user)
+        self.client.cookies["lang"] = "it"
+
+        with override_settings(KEYCLOAK=keycloak_settings(UI_LOCALES=language_from_cookie)):
+            response = self.client.get(reverse("keycloak-change-password"))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn("ui_locales=it", response["Location"])
+        self.assertIn("kc_action=UPDATE_PASSWORD", response["Location"])
+
+        without = self.client.get(reverse("keycloak-change-password"))
+        self.assertNotIn("ui_locales", without["Location"])

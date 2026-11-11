@@ -231,6 +231,7 @@ KEYCLOAK = {
 | `USER_CREATION_MODE` | `"pending"` | What happens when a Keycloak user without a Django user logs in: `disabled`, `pending` or `active`. See [Users](#users). |
 | `SUPERUSER_ROLE` | `None` | Keycloak realm role that makes a user Django superuser at first login. `None` turns automatic superusers off. See [Superuser](#superuser). |
 | `TOKEN_REFRESH_INTERVAL` | `86400` | Seconds between token refreshes. Used by `KeycloakTokenRefreshMiddleware`. |
+| `UI_LOCALES` | `None` | Callable, or its dotted path, that receives the request and returns the language of Keycloak's pages (for example `"it"`), or `None`. See [Language of Keycloak's pages](#language-of-keycloaks-pages). |
 
 The settings are checked when Django starts (`manage.py check`, `runserver`, `migrate`): a missing or invalid value stops it with an error that names it.
 
@@ -496,6 +497,24 @@ When Keycloak sends the user back to `/api/oidc/callback/`:
 | No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403` |
 
 Failures are logged at `WARNING` level with the reason.
+
+### Language of Keycloak's pages
+
+By default Keycloak chooses the language of its login, registration and password pages (from the browser, its own cookie or the user's account). To make them follow the application, set `UI_LOCALES` to a callable that returns the application's language for the request:
+
+```python
+from django.utils.translation import get_language
+
+def keycloak_language(request):
+    return get_language()  # or the language the application keeps, for example in a cookie
+
+KEYCLOAK = {
+    ...
+    "UI_LOCALES": "myproject.auth.keycloak_language",
+}
+```
+
+The value is sent as `ui_locales` with the login, the registration and the password change. When the callable returns `None` (or `""`), nothing is sent. Keycloak uses the language only if the realm has internationalization enabled with it among the supported locales (Realm settings → Localization).
 
 ### Logout
 
