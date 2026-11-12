@@ -1,6 +1,8 @@
 ## Changelog
 
-### Unreleased
+### 1.1.0
+
+Additions only: without the new settings and arguments, every answer and request is as in 1.0.0.
 
 #### Added
 
