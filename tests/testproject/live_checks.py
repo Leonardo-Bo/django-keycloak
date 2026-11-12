@@ -244,6 +244,23 @@ def main():
             KeycloakAdminClient(BETA).delete_user(created["id"])
         KeycloakIdentity.objects.filter(user=boss_user, realm=BETA).delete()
 
+    # The language of a new account.
+    created = None
+    try:
+        create_user_with_temporary_password(
+            username="lingua@example.test", email="lingua@example.test",
+            password="Temp-Pass-1234!", realm=BETA, locale="it",
+        )
+        client = KeycloakAdminClient(BETA)
+        created = client.find_user(username="lingua@example.test")
+        attributes = client.session.get(client._url(f"users/{created['id']}"), timeout=5).json()
+        check("a new account keeps the language it was created with",
+              (attributes.get("attributes") or {}).get("locale") == ["it"], attributes.get("attributes"))
+    finally:
+        if created:
+            KeycloakAdminClient(BETA).delete_user(created["id"])
+        User.objects.filter(username="lingua@example.test").delete()
+
     # Password change. Keycloak's cookies are dropped first: with them, Keycloak 26 answers
     # the simulated browser "already_logged_in" (not checked in a real browser).
     changer = Browser(ALPHA)

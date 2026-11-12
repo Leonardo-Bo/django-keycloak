@@ -47,6 +47,15 @@ class AdminClientTimeoutTests(SimpleTestCase):
         client = self.client_with(201, headers={"Location": "http://x/users/abc"})
         client.create_user(username="u", email="u@example.com", password="p")
         self.assert_timeout(client)
+        self.assertNotIn("attributes", client.session.post.call_args.kwargs["json"])
+
+    def test_create_user_with_locale(self):
+        client = self.client_with(201, headers={"Location": "http://x/users/abc"})
+        client.create_user(username="u", email="u@example.com", password="p", locale="it")
+        self.assertEqual(
+            client.session.post.call_args.kwargs["json"]["attributes"],
+            {"locale": ["it"]},
+        )
 
     def test_send_verify_email(self):
         client = self.client_with(204)

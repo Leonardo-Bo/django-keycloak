@@ -12,6 +12,7 @@ from django.shortcuts import redirect
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.http import url_has_allowed_host_and_scheme
+from django.utils.module_loading import import_string
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
@@ -21,12 +22,15 @@ from .models import KeycloakIdentity, KeycloakSession
 from .services import (
     KeycloakUserError,
     get_or_create_django_user,
+    keycloak_logout_url,
     request_password_reset,
 )
 from .sessions import end_sessions, forget_session
 from .settings import (
+    get_keycloak_settings,
     get_realm_by_issuer,
     get_session_realm,
+    get_ui_locales,
     resolve_realm,
 )
 
@@ -60,6 +64,33 @@ def get_safe_next_url(request: HttpRequest) -> str | None:
 def no_realm() -> HttpResponse:
     """The request belongs to no Keycloak realm (REALM_RESOLVER returned None)."""
     return HttpResponse(status=404)
+
+
+def login_denied(
+    request: HttpRequest,
+    realm,
+    reason: str,
+    message: str,
+    id_token: str | None,
+) -> HttpResponse:
+    """
+    Answer a login Keycloak completed but this application refuses.
+
+    With LOGIN_DENIED_VIEW, that view answers; otherwise a plain 403 with ``message``.
+    """
+    view = get_keycloak_settings().get("LOGIN_DENIED_VIEW")
+
+    if view is None:
+        return HttpResponse(message, status=403)
+
+    if isinstance(view, str):
+        view = import_string(view)
+
+    return view(
+        request,
+        reason,
+        logout_url=keycloak_logout_url(request, realm=realm, id_token=id_token),
+    )
 
 
 def login_view(request: HttpRequest) -> HttpResponse:
@@ -113,6 +144,11 @@ def start_login(request: HttpRequest, step: str, **params) -> HttpResponse:
     redirect_uri = request.build_absolute_uri(
         reverse("keycloak-callback")
     )
+
+    ui_locales = get_ui_locales(request)
+
+    if ui_locales:
+        params["ui_locales"] = ui_locales
 
     try:
         return get_oauth_client(realm).authorize_redirect(
@@ -184,12 +220,12 @@ def callback_view(request: HttpRequest) -> HttpResponse:
     logger.info("Keycloak authentication completed in realm %s.", realm.name)
 
     userinfo = token["userinfo"]
+    id_token = token.get("id_token")
 
     # Required for everyone, superuser included, and checked before any user is created.
     if not userinfo.get("email_verified", False):
-        return HttpResponse(
-            "Email address is not verified.",
-            status=403,
+        return login_denied(
+            request, realm, "email_not_verified", "Email address is not verified.", id_token,
         )
 
     try:
@@ -199,7 +235,7 @@ def callback_view(request: HttpRequest) -> HttpResponse:
             access_token=token.get("access_token"),
         )
     except KeycloakUserError as exc:
-        return HttpResponse(str(exc), status=403)
+        return login_denied(request, realm, exc.reason, str(exc), id_token)
     except RequestException:
         logger.warning(
             "Keycloak could not be reached during login.",
@@ -212,10 +248,12 @@ def callback_view(request: HttpRequest) -> HttpResponse:
         )
 
     if not user.is_active:
-        return HttpResponse(
-            "Your account is inactive. "
-            "Please wait for an administrator to activate it.",
-            status=403,
+        return login_denied(
+            request,
+            realm,
+            "inactive",
+            "Your account is inactive. Please wait for an administrator to activate it.",
+            id_token,
         )
 
     next_url = request.session.pop(
@@ -322,6 +360,11 @@ def change_password_view(
         "kc_action": "UPDATE_PASSWORD",
         "state": state,
     }
+
+    ui_locales = get_ui_locales(request)
+
+    if ui_locales:
+        params["ui_locales"] = ui_locales
 
     return redirect(f"{realm.authorization_url}?{urlencode(params)}")
 

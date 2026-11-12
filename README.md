@@ -81,6 +81,8 @@ Then set the redirect URI and the web origin:
 | Valid redirect URI | `http://127.0.0.1:8000/api/oidc/callback/` |
 | Web origin | `http://127.0.0.1:8000` |
 
+If the application offers "sign in with another account" after a refused login (see [Refused logins](#refused-logins)), also add the login URL, `http://127.0.0.1:8000/api/oidc/login/`, to **Valid post logout redirect URIs**.
+
 In production, use the application's actual HTTPS URLs.
 
 The resulting configuration is:
@@ -231,6 +233,8 @@ KEYCLOAK = {
 | `USER_CREATION_MODE` | `"pending"` | What happens when a Keycloak user without a Django user logs in: `disabled`, `pending` or `active`. See [Users](#users). |
 | `SUPERUSER_ROLE` | `None` | Keycloak realm role that makes a user Django superuser at first login. `None` turns automatic superusers off. See [Superuser](#superuser). |
 | `TOKEN_REFRESH_INTERVAL` | `86400` | Seconds between token refreshes. Used by `KeycloakTokenRefreshMiddleware`. |
+| `LOGIN_DENIED_VIEW` | `None` | View, or its dotted path, that answers a refused login. See [Refused logins](#refused-logins). |
+| `UI_LOCALES` | `None` | Callable, or its dotted path, that receives the request and returns the language of Keycloak's pages (for example `"it"`), or `None`. See [Language of Keycloak's pages](#language-of-keycloaks-pages). |
 
 The settings are checked when Django starts (`manage.py check`, `runserver`, `migrate`): a missing or invalid value stops it with an error that names it.
 
@@ -352,6 +356,34 @@ A Django user that already has the same username but is not linked to this ident
 
 Only the username (Keycloak's `preferred_username`, or the email if missing) and the email are copied to Django, and only when the user is created. Later changes in Keycloak are not synchronized.
 
+### Refused logins
+
+By default a refused login answers `403` with a short English message. To show the application's own page, set `LOGIN_DENIED_VIEW` to a view, or its dotted path. It is called as `view(request, reason, logout_url=...)` and should answer `403`:
+
+| `reason` | When |
+| --- | --- |
+| `no_user` | No Django user for this Keycloak account (`USER_CREATION_MODE` is `disabled`), for example someone who signed in without an invitation. |
+| `email_not_verified` | Keycloak reports the email address as not verified. |
+| `inactive` | The Django user is inactive, for example waiting for activation (`pending`). |
+| `username_taken` | A Django user with the same username exists and is not linked to this account. |
+| `invalid_login` | Keycloak gave no username or email, or the access token could not be verified. |
+
+The user is not logged in to Django but is still logged in to Keycloak, so the next login would use the same account. `logout_url` ends the Keycloak session and comes back to the login, where another account can be used: offer it as a link ("Sign in with another account"). It carries the ID token of the refused login, so Keycloak does not ask for confirmation, and the language of `UI_LOCALES`. The login URL must be among the client's **Valid post logout redirect URIs**. `logout_url` is `None` only if the request belongs to no realm.
+
+```python
+from django.shortcuts import render
+
+def login_denied(request, reason, logout_url):
+    return render(request, "login_denied.html", {"reason": reason, "logout_url": logout_url}, status=403)
+
+KEYCLOAK = {
+    ...
+    "LOGIN_DENIED_VIEW": "myproject.views.login_denied",
+}
+```
+
+To build the same address elsewhere, use `django_keycloak.services.keycloak_logout_url(request, realm=None, id_token=None, return_to=None)`: `realm` defaults to the request's, `return_to` to the application's login.
+
 ### Superuser
 
 A Keycloak user who holds the realm role `KEYCLOAK["SUPERUSER_ROLE"]` and has no Django user yet is provisioned at first login as an active Django superuser (`is_staff` and `is_superuser`), linked to its Keycloak identity, whatever `USER_CREATION_MODE` says. Like every user, it needs a verified email.
@@ -383,6 +415,8 @@ user = create_user_with_temporary_password(
 The function creates an enabled Keycloak user with a temporary password (Keycloak forces a password change at first login), an active Django user, and the identity linking them. The Django user and the identity are created in a single transaction. If the Django side fails, the Keycloak user is deleted, so the operation can be retried.
 
 `realm` is the realm name. It can be omitted when a single realm is configured, and is required with several.
+
+`locale` (optional, for example `"it"`) is stored as the user's `locale` attribute in Keycloak, so Keycloak writes its emails and pages to that user in that language. The realm must have internationalization enabled with that language among the supported locales (Realm settings → Localization); otherwise Keycloak drops the attribute and uses its default.
 
 To give an existing Django user an account in another realm, pass it as `user`: the Keycloak account is created in `realm` and linked to that user, and no Django user is created.
 
@@ -491,9 +525,27 @@ When Keycloak sends the user back to `/api/oidc/callback/`:
 | Login completed | Redirect to `next`, or `/` |
 | User cancelled on Keycloak, expired or replayed login (state mismatch), code refused, login started in another realm | `400` |
 | Keycloak unreachable while exchanging the code | `503` |
-| No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403` |
+| No Django user can be used (see [Login and user mapping](#login-and-user-mapping)), email not verified, user inactive | `403`, or the `LOGIN_DENIED_VIEW` (see [Refused logins](#refused-logins)) |
 
 Failures are logged at `WARNING` level with the reason.
+
+### Language of Keycloak's pages
+
+By default Keycloak chooses the language of its login, registration and password pages (from the browser, its own cookie or the user's account). To make them follow the application, set `UI_LOCALES` to a callable that returns the application's language for the request:
+
+```python
+from django.utils.translation import get_language
+
+def keycloak_language(request):
+    return get_language()  # or the language the application keeps, for example in a cookie
+
+KEYCLOAK = {
+    ...
+    "UI_LOCALES": "myproject.auth.keycloak_language",
+}
+```
+
+The value is sent as `ui_locales` with the login, the registration and the password change. When the callable returns `None` (or `""`), nothing is sent. Keycloak uses the language only if the realm has internationalization enabled with it among the supported locales (Realm settings → Localization).
 
 ### Logout
 

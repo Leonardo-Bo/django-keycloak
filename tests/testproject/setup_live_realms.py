@@ -7,6 +7,7 @@ Realms dk-alpha and dk-beta, each with:
   beta.localhost:8001, back-channel logout to 127.0.0.1:8001);
 - an Admin API client "django-keycloak" with manage-users;
 - the realm role "django-superuser";
+- internationalization with English (default) and Italian;
 - test users with generated passwords.
 
 The secrets and passwords are written to testproject/config.json under "LIVE" (the file is
@@ -96,6 +97,9 @@ def realm_representation(name, host, client_secret, admin_client_secret, passwor
         "registrationAllowed": False,
         "verifyEmail": False,
         "revokeRefreshToken": False,
+        "internationalizationEnabled": True,
+        "supportedLocales": ["en", "it"],
+        "defaultLocale": "en",
         "roles": {"realm": [{"name": "django-superuser"}]},
         "clients": [
             {

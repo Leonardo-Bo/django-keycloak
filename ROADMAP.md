@@ -15,6 +15,20 @@ or models needs a major version.
   `link_existing_account`, accounts in a second realm for an existing user. Asked by
   report_hub (one installation, one realm per organisation).
 
+## Done in 1.1.0
+
+Asked by report_hub (D-91 there); additions only, the defaults of 1.0.0 unchanged.
+
+- `locale` on the accounts created through the Admin API.
+- `UI_LOCALES`: the application's language sent to Keycloak's pages.
+- `LOGIN_DENIED_VIEW` and `services.keycloak_logout_url`: a refused login answered by the
+  application, with a way to sign in with another account.
+
+Checked by hand in report_hub against the local Keycloak 26.7.1 (2026-11-12): `locale` stored on
+a new account; `ui_locales` sent at login in both languages; a refused login (`no_user`) on the
+application's page, and the logout address ending the Keycloak session and coming back to the
+login, in two realms.
+
 ## Checked against a real Keycloak (local Keycloak 26.7.1, 2026-11-10)
 
 With `tests/testproject/live_checks.py` (realms `dk-alpha` and `dk-beta`), all passing:

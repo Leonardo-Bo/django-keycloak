@@ -54,6 +54,10 @@ class Realm:
         return f"{self.issuer}/protocol/openid-connect/token"
 
     @property
+    def end_session_url(self):
+        return f"{self.issuer}/protocol/openid-connect/logout"
+
+    @property
     def certs_url(self):
         return f"{self.issuer}/protocol/openid-connect/certs"
 
@@ -212,6 +216,24 @@ def resolve_realm(request):
         return None
 
     return get_realm(name)
+
+
+def get_ui_locales(request):
+    """
+    Return the language Keycloak's pages should use for this request, or None.
+
+    With UI_LOCALES, a callable (or its dotted path) called with the request, which returns
+    a language tag such as "it", or None. Without it, None: Keycloak chooses.
+    """
+    resolver = get_keycloak_settings().get("UI_LOCALES")
+
+    if resolver is None:
+        return None
+
+    if isinstance(resolver, str):
+        resolver = import_string(resolver)
+
+    return resolver(request) or None
 
 
 def get_session_realm(request):
